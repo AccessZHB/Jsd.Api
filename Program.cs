@@ -1,0 +1,193 @@
+using System.Text;
+using Jsd.Api.Entities;
+using Jsd.Api.Repositories;
+using Jsd.Api.Services;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.IdentityModel.Tokens;
+using Microsoft.OpenApi.Models;
+using Swashbuckle.AspNetCore.Filters;
+
+var builder = WebApplication.CreateBuilder(args);
+
+// ============================================================
+// 1. 注册数据库上下文（Pomelo MySQL 提供程序）
+// ============================================================
+var connectionString = builder.Configuration.GetConnectionString("DefaultConnection");
+builder.Services.AddDbContext<AppDbContext>(options =>
+    options.UseMySql(connectionString, ServerVersion.AutoDetect(connectionString!)));
+
+// ============================================================
+// 2. 依赖注入 —— 仓储层（Repository）
+//    泛型仓储用开放泛型注册：注入 IRepository<SysRole> 时自动给 Repository<SysRole>
+// ============================================================
+builder.Services.AddScoped(typeof(IRepository<>), typeof(Repository<>));
+builder.Services.AddScoped<ISysUserRepository, SysUserRepository>();
+builder.Services.AddScoped<ISysMenuRepository, SysMenuRepository>();
+
+// 基础数据 & 商品管理模块 —— 专用仓储（其余模块直接用泛型 IRepository<T>）
+builder.Services.AddScoped<ISupSupplierRepository, SupSupplierRepository>();
+builder.Services.AddScoped<IProdInfoRepository, ProdInfoRepository>();
+
+// 入库管理模块 —— 专用仓储
+builder.Services.AddScoped<ILogStockInRepository, LogStockInRepository>();
+builder.Services.AddScoped<ILogStockInItemRepository, LogStockInItemRepository>();
+
+// 出库管理模块 —— 专用仓储
+builder.Services.AddScoped<ILogStockOutRepository, LogStockOutRepository>();
+builder.Services.AddScoped<ILogStockOutItemRepository, LogStockOutItemRepository>();
+
+// 库存盘点模块 —— 专用仓储
+builder.Services.AddScoped<ILogStockCheckRepository, LogStockCheckRepository>();
+builder.Services.AddScoped<ILogStockCheckItemRepository, LogStockCheckItemRepository>();
+
+// 库存预警模块 —— 专用仓储
+builder.Services.AddScoped<IStockWarningRepository, StockWarningRepository>();
+
+// 库存查询模块 —— 只读仓储（5 张现有表关联查询）
+builder.Services.AddScoped<IStockQueryRepository, StockQueryRepository>();
+
+// 订单管理模块 —— 专用仓储
+builder.Services.AddScoped<IOrderRepository, OrderRepository>();
+builder.Services.AddScoped<IOrderItemRepository, OrderItemRepository>();
+
+// 客户管理模块 —— 专用仓储
+builder.Services.AddScoped<IMemMemberRepository, MemMemberRepository>();
+
+// ============================================================
+// 3. 依赖注入 —— 服务层（Service）
+// ============================================================
+builder.Services.AddScoped<IAuthService, AuthService>();
+builder.Services.AddScoped<ISysMenuService, SysMenuService>();
+builder.Services.AddScoped<ISysUserService, SysUserService>();
+builder.Services.AddScoped<ISysRoleService, SysRoleService>();
+builder.Services.AddSingleton<JwtService>();          // JWT 无状态，单例即可
+builder.Services.AddScoped<CurrentUserService>();     // 依赖 HttpContext，按请求域
+builder.Services.AddHttpContextAccessor();            // 让 Service 能拿到 HttpContext
+
+// 基础数据 & 商品管理模块 —— 服务层
+builder.Services.AddScoped<ISupSupplierService, SupSupplierService>();
+builder.Services.AddScoped<IProdCategoryService, ProdCategoryService>();
+builder.Services.AddScoped<IProdInfoService, ProdInfoService>();
+builder.Services.AddScoped<IProdSpecService, ProdSpecService>();
+builder.Services.AddScoped<IProdSkuService, ProdSkuService>();
+
+// 入库管理模块 —— 服务层
+builder.Services.AddScoped<IStockInService, StockInService>();
+builder.Services.AddScoped<IStockOutService, StockOutService>();
+
+// 库存盘点模块 —— 服务层
+builder.Services.AddScoped<IStockCheckService, StockCheckService>();
+
+// 库存预警模块 —— 服务层
+builder.Services.AddScoped<IStockWarningService, StockWarningService>();
+
+// 库存查询模块 —— 服务层（只读）
+builder.Services.AddScoped<IStockQueryService, StockQueryService>();
+
+// 订单管理模块 —— 服务层（状态流转 + 库存/销量联动）
+builder.Services.AddScoped<IOrderService, OrderService>();
+
+// 客户管理模块 —— 服务层
+builder.Services.AddScoped<IMemMemberService, MemMemberService>();
+
+// ============================================================
+// 4. AutoMapper（自动扫描当前程序集中的 MappingProfile）
+// ============================================================
+builder.Services.AddAutoMapper(typeof(Program).Assembly);
+
+// ============================================================
+// 5. JWT 身份认证
+// ============================================================
+var jwtSection = builder.Configuration.GetSection("Jwt");
+builder.Services
+    .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+    .AddJwtBearer(options =>
+    {
+        options.TokenValidationParameters = new TokenValidationParameters
+        {
+            ValidateIssuer = true,              // 校验签发方
+            ValidateAudience = true,            // 校验接收方
+            ValidateLifetime = true,            // 校验过期时间
+            ValidateIssuerSigningKey = true,    // 校验签名密钥
+            ValidIssuer = jwtSection["Issuer"],
+            ValidAudience = jwtSection["Audience"],
+            IssuerSigningKey = new SymmetricSecurityKey(
+                Encoding.UTF8.GetBytes(jwtSection["SecretKey"]!))
+        };
+    });
+builder.Services.AddAuthorization();
+
+// ============================================================
+// 6. 跨域 CORS（开发期允许前端任意地址访问）
+// ============================================================
+builder.Services.AddCors(options =>
+{
+    options.AddPolicy("AllowAll", policy =>
+    {
+        policy.AllowAnyOrigin()
+              .AllowAnyMethod()
+              .AllowAnyHeader();
+    });
+});
+
+// ============================================================
+// 7. Swagger 接口文档（支持在页面上输入 JWT 调试）
+// ============================================================
+builder.Services.AddEndpointsApiExplorer();
+builder.Services.AddSwaggerGen(options =>
+{
+    options.SwaggerDoc("v1", new OpenApiInfo
+    {
+        Title = "镜速订产品订货系统 API",
+        Version = "v1",
+        Description = "镜速订 B2B 订货系统 —— 系统管理模块接口文档"
+    });
+
+    // Swagger 页面上的 Bearer Token 输入框
+    options.AddSecurityDefinition("oauth2", new OpenApiSecurityScheme
+    {
+        Description = "JWT 认证，请输入：Bearer {token}",
+        Name = "Authorization",
+        In = ParameterLocation.Header,
+        Type = SecuritySchemeType.ApiKey,
+        Scheme = "Bearer",
+        BearerFormat = "JWT"
+    });
+    options.OperationFilter<SecurityRequirementsOperationFilter>();
+});
+
+// ============================================================
+// 8. 控制器
+//    显式声明 JSON 序列化采用 camelCase 驼峰命名（ASP.NET Core 默认即此策略，
+//    此处显式配置以消除歧义，确保前端 camelCase 字段能正确绑定到后端 PascalCase 属性）。
+// ============================================================
+builder.Services.AddControllers().AddJsonOptions(options =>
+{
+    options.JsonSerializerOptions.PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase;
+});
+
+// 确保静态文件根目录存在（图片上传保存到 wwwroot/upload）
+Directory.CreateDirectory(Path.Combine(builder.Environment.ContentRootPath, "wwwroot", "upload"));
+
+var app = builder.Build();
+
+// ============================================================
+// HTTP 请求管道配置
+// ============================================================
+if (app.Environment.IsDevelopment())
+{
+    app.UseSwagger();
+    app.UseSwaggerUI(c =>
+    {
+        c.SwaggerEndpoint("/swagger/v1/swagger.json", "Jsd.Api v1");
+    });
+}
+
+app.UseCors("AllowAll");            // 跨域
+app.UseStaticFiles();               // 静态文件（wwwroot，上传的图片通过 /upload/... 访问，img 标签不带 JWT 故放行）
+app.UseAuthentication();            // 认证（先）
+app.UseAuthorization();             // 授权（后）
+app.MapControllers();               // 映射控制器路由
+
+app.Run();

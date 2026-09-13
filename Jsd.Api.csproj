@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>Jsd.Api</RootNamespace>
+  </PropertyGroup>
+
+  <!-- NuGet 依赖包 -->
+  <ItemGroup>
+    <!-- JWT 认证 -->
+    <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="9.0.0" />
+    <!-- EF Core -->
+    <PackageReference Include="Microsoft.EntityFrameworkCore" Version="9.0.0" />
+    <!-- MySQL 数据库提供程序 (Pomelo) -->
+    <PackageReference Include="Pomelo.EntityFrameworkCore.MySql" Version="9.0.0" />
+    <!-- BCrypt 密码加密（与数据库 sys_user.password 的 BCrypt 密文对应） -->
+    <PackageReference Include="BCrypt.Net-Next" Version="4.0.3" />
+    <!-- AutoMapper 对象映射（DI 扩展包要求 AutoMapper 精确为 12.0.1） -->
+    <PackageReference Include="AutoMapper" Version="12.0.1" />
+    <PackageReference Include="AutoMapper.Extensions.Microsoft.DependencyInjection" Version="12.0.1" />
+    <!-- Swagger 接口文档 -->
+    <PackageReference Include="Swashbuckle.AspNetCore" Version="6.6.2" />
+    <PackageReference Include="Swashbuckle.AspNetCore.Filters" Version="7.0.12" />
+  </ItemGroup>
+
+</Project>

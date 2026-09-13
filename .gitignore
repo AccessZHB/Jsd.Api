@@ -1,0 +1,15 @@
+# VS缓存
+.vs/
+bin/
+obj/
+*.suo
+*.vsidx
+*.user
+
+# 配置与数据库
+appsettings.Development.json
+*.db
+*.sqlite
+
+# 日志
+*.log
