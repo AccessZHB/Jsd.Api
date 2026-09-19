@@ -2,6 +2,7 @@ using System.Text;
 using Jsd.Api.Entities;
 using Jsd.Api.Repositories;
 using Jsd.Api.Services;
+using Jsd.Api.Validators;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
@@ -54,6 +55,14 @@ builder.Services.AddScoped<IOrderItemRepository, OrderItemRepository>();
 // 客户管理模块 —— 专用仓储
 builder.Services.AddScoped<IMemMemberRepository, MemMemberRepository>();
 
+// 财务结算模块 —— 专用仓储（应收 + 收款 + 支付日志）
+builder.Services.AddScoped<IReceivableRepository, ReceivableRepository>();
+builder.Services.AddScoped<IPaymentRepository, PaymentRepository>();
+
+// 财务结算模块 —— FluentValidation 校验器（由 Service 显式调用 ValidateAndThrow）
+builder.Services.AddScoped<PaymentCreateValidator>();
+builder.Services.AddScoped<WriteOffInputValidator>();
+
 // ============================================================
 // 3. 依赖注入 —— 服务层（Service）
 // ============================================================
@@ -90,6 +99,10 @@ builder.Services.AddScoped<IOrderService, OrderService>();
 
 // 客户管理模块 —— 服务层
 builder.Services.AddScoped<IMemMemberService, MemMemberService>();
+
+// 财务结算模块 —— 服务层（应收账款 + 收款核销 + 支付回调）
+builder.Services.AddScoped<IReceivableService, ReceivableService>();
+builder.Services.AddScoped<IPaymentService, PaymentService>();
 
 // ============================================================
 // 4. AutoMapper（自动扫描当前程序集中的 MappingProfile）

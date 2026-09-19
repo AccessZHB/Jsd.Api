@@ -124,6 +124,15 @@ public class TrxOrder
     [Column("merchant_remark")]
     public string MerchantRemark { get; set; } = string.Empty;
 
+    /// <summary>
+    /// 是否信用订单：0-否（正常支付） 1-是（走应收流程）
+    /// 【财务结算模块联动】本订单【发货】且 is_credit=1 时，
+    /// ReceivableService.SyncFromOrderAsync 会自动在 trx_receivable 生成应收账款记录。
+    /// 普通订单（0）发货后不产生应收。
+    /// </summary>
+    [Column("is_credit")]
+    public int IsCredit { get; set; }
+
     /// <summary>关闭原因（超时未付 / 用户取消等）</summary>
     [StringLength(200)]
     [Column("close_reason")]

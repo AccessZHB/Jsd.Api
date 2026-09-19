@@ -10,13 +10,13 @@ namespace Jsd.Api.Services;
 /// 订单服务实现。
 ///
 /// ┌──────────────────────────────────────────────────────────────────────┐
-/// │ 一、状态流转（本系统【无审核环节】，支付即生效）                        │
-/// │   0 待付款 Pending ──支付──▶ 1 已支付 Paid ──发货──▶ 2 已发货 Shipped  │
-/// │                                                        │               │
-/// │                                                    确认收货           │
-/// │                                                        ▼               │
-/// │                                                  3 已完成 Completed    │
-/// │   0 待付款 Pending ──关闭──▶ 4 已关闭 Closed                          │
+/// │ 一、状态流转（本系统【无审核环节】，支付即生效）                                                                                           │
+/// │   0 待付款 Pending ──支付──▶ 1 已支付 Paid ──发货──▶ 2 已发货 Shipped                                                              │
+/// │                                                        │                                                                                  │
+/// │                                                    确认收货                                                                                │
+/// │                                                        ▼                                                                                  │
+/// │                                                  3 已完成 Completed                                                                        │
+/// │   0 待付款 Pending ──关闭──▶ 4 已关闭 Closed                                                                                           │
 /// └──────────────────────────────────────────────────────────────────────┘
 ///
 /// 二、库存 / 销量联动（本模块与库存模块的唯一耦合点）
@@ -60,17 +60,20 @@ public class OrderService : IOrderService
     private readonly IOrderRepository _orderRepository;
     private readonly IOrderItemRepository _itemRepository;
     private readonly IRepository<MemMember> _memberRepository;
+    private readonly IReceivableService _receivableService;
 
     public OrderService(
         AppDbContext db,
         IOrderRepository orderRepository,
         IOrderItemRepository itemRepository,
-        IRepository<MemMember> memberRepository)
+        IRepository<MemMember> memberRepository,
+        IReceivableService receivableService)
     {
         _db = db;
         _orderRepository = orderRepository;
         _itemRepository = itemRepository;
         _memberRepository = memberRepository;
+        _receivableService = receivableService;
     }
 
     // ============================================================
@@ -316,6 +319,14 @@ public class OrderService : IOrderService
             order.ShipCompany = dto.ShipCompany;
             order.ShipNo = dto.ShipNo;
             order.OrderStatus = OrderStatuses.Shipped;   // 已发货（待收货）
+
+            // 【财务结算联动】信用订单（is_credit=1）发货后自动生成应收账款。
+            // 放在事务内：应收生成失败则发货一并回滚，保证"发了货就一定能收到账"。
+            // 内部已做幂等（同一订单只生成一条），非信用订单直接返回 0，不产生应收。
+            if (order.IsCredit == 1)
+            {
+                await _receivableService.SyncFromOrderAsync(order.Id);
+            }
 
             await _orderRepository.SaveChangesAsync();
             await tx.CommitAsync();

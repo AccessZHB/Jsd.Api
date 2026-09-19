@@ -17,6 +17,8 @@
     <PackageReference Include="Pomelo.EntityFrameworkCore.MySql" Version="9.0.0" />
     <!-- BCrypt 密码加密（与数据库 sys_user.password 的 BCrypt 密文对应） -->
     <PackageReference Include="BCrypt.Net-Next" Version="4.0.3" />
+    <!-- FluentValidation 参数校验（财务结算模块使用；强类型校验规则） -->
+    <PackageReference Include="FluentValidation" Version="10.3.6" />
     <!-- AutoMapper 对象映射（DI 扩展包要求 AutoMapper 精确为 12.0.1） -->
     <PackageReference Include="AutoMapper" Version="12.0.1" />
     <PackageReference Include="AutoMapper.Extensions.Microsoft.DependencyInjection" Version="12.0.1" />

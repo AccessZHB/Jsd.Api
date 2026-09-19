@@ -75,6 +75,20 @@ public class AppDbContext : DbContext
     /// <summary>会员 / 客户主表（mem_member，订单 buyer_id 指向本表）</summary>
     public DbSet<MemMember> MemMembers => Set<MemMember>();
 
+    // ==================== 财务结算模块 ====================
+
+    /// <summary>应收账款表（trx_receivable，B2B 赊账/月结）</summary>
+    public DbSet<TrxReceivable> TrxReceivables => Set<TrxReceivable>();
+
+    /// <summary>收款记录表（mkt_payment，线下收款）</summary>
+    public DbSet<MktPayment> MktPayments => Set<MktPayment>();
+
+    /// <summary>收款核销关联表（mkt_payment_item）</summary>
+    public DbSet<MktPaymentItem> MktPaymentItems => Set<MktPaymentItem>();
+
+    /// <summary>支付日志表（trx_payment_log，微信回调对账）</summary>
+    public DbSet<TrxPaymentLog> TrxPaymentLogs => Set<TrxPaymentLog>();
+
     /// <summary>商品图片（prod_image：主图/轮播图/详情图）</summary>
     public DbSet<ProdImage> ProdImages => Set<ProdImage>();
 
@@ -265,6 +279,36 @@ public class AppDbContext : DbContext
             entity.HasIndex(e => e.Level);                 // 按等级筛选
             entity.HasIndex(e => e.Status);                // 按状态筛选
             entity.HasIndex(e => e.CreateTime);            // 按注册时间范围筛选
+        });
+
+        // ---------- 财务结算模块 ----------
+        // 索引与财务建表语句保持一致（idx_member_id / idx_order_id / idx_status_due_date / uk_payment_no 等）
+        modelBuilder.Entity<TrxReceivable>(entity =>
+        {
+            entity.HasIndex(e => e.MemberId);
+            entity.HasIndex(e => e.OrderId);
+            entity.HasIndex(e => new { e.Status, e.DueDate });   // 账龄/逾期查询
+        });
+
+        modelBuilder.Entity<MktPayment>(entity =>
+        {
+            entity.HasIndex(e => e.PaymentNo).IsUnique();        // 收款单号唯一（uk_payment_no）
+            entity.HasIndex(e => e.MemberId);
+            entity.HasIndex(e => e.Status);
+        });
+
+        modelBuilder.Entity<MktPaymentItem>(entity =>
+        {
+            entity.HasIndex(e => e.PaymentId);
+            entity.HasIndex(e => e.ReceivableId);
+        });
+
+        modelBuilder.Entity<TrxPaymentLog>(entity =>
+        {
+            entity.HasIndex(e => e.OrderId);
+            entity.HasIndex(e => e.OrderNo);
+            entity.HasIndex(e => e.TransactionId);
+            entity.HasIndex(e => e.Status);
         });
     }
 }
