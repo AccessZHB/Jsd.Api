@@ -92,6 +92,37 @@ public class AppDbContext : DbContext
     /// <summary>商品图片（prod_image：主图/轮播图/详情图）</summary>
     public DbSet<ProdImage> ProdImages => Set<ProdImage>();
 
+    // ==================== 采购管理模块 ====================
+
+    /// <summary>采购订单主表（pur_order）</summary>
+    public DbSet<PurOrder> PurOrders => Set<PurOrder>();
+
+    /// <summary>采购订单明细表（pur_order_item）</summary>
+    public DbSet<PurOrderItem> PurOrderItems => Set<PurOrderItem>();
+
+    /// <summary>采购入库单主表（pur_inbound，以采定入）</summary>
+    public DbSet<PurInbound> PurInbounds => Set<PurInbound>();
+
+    /// <summary>采购入库明细表（pur_inbound_item）</summary>
+    public DbSet<PurInboundItem> PurInboundItems => Set<PurInboundItem>();
+
+    /// <summary>应付账款表（pur_payable，入库确认自动生成）</summary>
+    public DbSet<PurPayable> PurPayables => Set<PurPayable>();
+
+    // ==================== 售后管理模块 ====================
+
+    /// <summary>退款申请表（trx_refund，资金流主表）</summary>
+    public DbSet<TrxRefund> TrxRefunds => Set<TrxRefund>();
+
+    /// <summary>退货单表（trx_return，物流流主表）</summary>
+    public DbSet<TrxReturn> TrxReturns => Set<TrxReturn>();
+
+    /// <summary>退货明细表（trx_return_item）</summary>
+    public DbSet<TrxReturnItem> TrxReturnItems => Set<TrxReturnItem>();
+
+    /// <summary>售后日志表（trx_refund_log，操作留痕）</summary>
+    public DbSet<TrxRefundLog> TrxRefundLogs => Set<TrxRefundLog>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
@@ -309,6 +340,155 @@ public class AppDbContext : DbContext
             entity.HasIndex(e => e.OrderNo);
             entity.HasIndex(e => e.TransactionId);
             entity.HasIndex(e => e.Status);
+        });
+
+        // ============================================================
+        // 采购管理模块（表结构以 purchase_module.sql 为准，列映射由实体 [Column] 特性完成）
+        // ============================================================
+
+        // ---------- pur_order 采购订单主表 ----------
+        modelBuilder.Entity<PurOrder>(entity =>
+        {
+            // 采购单号唯一索引（与数据库 uk_order_no 一致）
+            entity.HasIndex(e => e.OrderNo).IsUnique();
+            entity.HasIndex(e => e.SupplierId);
+            entity.HasIndex(e => e.Status);
+            entity.HasIndex(e => e.OrderDate);
+
+            // 采购订单 → 供应商（删除供应商时禁止级联，保留历史单据）
+            entity.HasOne(e => e.Supplier)
+                  .WithMany()
+                  .HasForeignKey(e => e.SupplierId)
+                  .OnDelete(DeleteBehavior.Restrict);
+        });
+
+        // ---------- pur_order_item 采购订单明细表 ----------
+        modelBuilder.Entity<PurOrderItem>(entity =>
+        {
+            entity.HasIndex(e => e.OrderId);
+            entity.HasIndex(e => e.MaterialId);   // material_id 实际关联 prod_sku.id
+
+            // 明细 → 订单（级联删除，删订单时明细一并删除）
+            entity.HasOne(e => e.Order)
+                  .WithMany(o => o.Items)
+                  .HasForeignKey(e => e.OrderId)
+                  .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        // ---------- pur_inbound 采购入库单主表 ----------
+        modelBuilder.Entity<PurInbound>(entity =>
+        {
+            // 入库单号唯一索引（与数据库 uk_inbound_no 一致）
+            entity.HasIndex(e => e.InboundNo).IsUnique();
+            entity.HasIndex(e => e.OrderId);
+            entity.HasIndex(e => e.Status);
+
+            // 入库单 → 采购订单（删除订单时禁止级联，保留历史入库单）
+            entity.HasOne(e => e.Order)
+                  .WithMany()
+                  .HasForeignKey(e => e.OrderId)
+                  .OnDelete(DeleteBehavior.Restrict);
+        });
+
+        // ---------- pur_inbound_item 采购入库明细表 ----------
+        modelBuilder.Entity<PurInboundItem>(entity =>
+        {
+            entity.HasIndex(e => e.InboundId);
+            entity.HasIndex(e => e.OrderItemId);   // 精确关联采购订单明细行
+
+            // 入库明细 → 入库单（级联删除）
+            entity.HasOne(e => e.Inbound)
+                  .WithMany(i => i.Items)
+                  .HasForeignKey(e => e.InboundId)
+                  .OnDelete(DeleteBehavior.Cascade);
+
+            // 入库明细 → 采购订单明细（删除订单明细时禁止级联）
+            entity.HasOne(e => e.OrderItem)
+                  .WithMany()
+                  .HasForeignKey(e => e.OrderItemId)
+                  .OnDelete(DeleteBehavior.Restrict);
+        });
+
+        // ---------- pur_payable 应付账款表 ----------
+        modelBuilder.Entity<PurPayable>(entity =>
+        {
+            // 应付单号唯一索引（与数据库 uk_payable_no 一致）
+            entity.HasIndex(e => e.PayableNo).IsUnique();
+            entity.HasIndex(e => e.SupplierId);
+            entity.HasIndex(e => e.RelatedOrderId);
+            entity.HasIndex(e => e.Status);
+
+            // 应付 → 供应商（删除供应商时禁止级联）
+            entity.HasOne(e => e.Supplier)
+                  .WithMany()
+                  .HasForeignKey(e => e.SupplierId)
+                  .OnDelete(DeleteBehavior.Restrict);
+
+            // 应付 → 采购订单（删除订单时置空关联，保留应付记录用于财务对账）
+            entity.HasOne(e => e.Order)
+                  .WithMany()
+                  .HasForeignKey(e => e.RelatedOrderId)
+                  .OnDelete(DeleteBehavior.SetNull);
+        });
+
+        // ============================================================
+        // 售后管理模块（表结构以 Jsd_order.sql 为准，列映射由实体 [Column] 特性完成）
+        // ============================================================
+
+        // ---------- trx_refund 退款申请表 ----------
+        modelBuilder.Entity<TrxRefund>(entity =>
+        {
+            entity.HasIndex(e => e.RefundNo).IsUnique();   // 退款单号唯一（uk_refund_no）
+            entity.HasIndex(e => e.OrderId);
+            entity.HasIndex(e => e.MemberId);
+            entity.HasIndex(e => e.Status);
+            entity.HasIndex(e => e.CreateTime);
+
+            // 退款单 → 订单（删除订单时禁止级联，保留历史退款单）
+            entity.HasOne(e => e.Order)
+                  .WithMany()
+                  .HasForeignKey(e => e.OrderId)
+                  .OnDelete(DeleteBehavior.Restrict);
+        });
+
+        // ---------- trx_return 退货单表 ----------
+        modelBuilder.Entity<TrxReturn>(entity =>
+        {
+            entity.HasIndex(e => e.ReturnNo).IsUnique();   // 退货单号唯一（uk_return_no）
+            entity.HasIndex(e => e.OrderId);
+            entity.HasIndex(e => e.RefundId);
+            entity.HasIndex(e => e.MemberId);
+            entity.HasIndex(e => e.Status);
+            entity.HasIndex(e => e.CreateTime);
+
+            // 退货单 → 退款单（删除退款单时禁止级联）
+            entity.HasOne(e => e.Refund)
+                  .WithMany()
+                  .HasForeignKey(e => e.RefundId)
+                  .OnDelete(DeleteBehavior.Restrict);
+
+            // 退货单 → 明细（级联删除）
+            entity.HasMany(e => e.Items)
+                  .WithOne(i => i.Return)
+                  .HasForeignKey(i => i.ReturnId)
+                  .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        // ---------- trx_return_item 退货明细表 ----------
+        modelBuilder.Entity<TrxReturnItem>(entity =>
+        {
+            entity.HasIndex(e => e.ReturnId);
+            entity.HasIndex(e => e.OrderItemId);
+            entity.HasIndex(e => e.ProdInfoId);
+            entity.HasIndex(e => e.SkuId);
+        });
+
+        // ---------- trx_refund_log 售后日志表 ----------
+        modelBuilder.Entity<TrxRefundLog>(entity =>
+        {
+            entity.HasIndex(e => e.RefundId);
+            entity.HasIndex(e => e.Action);
+            entity.HasIndex(e => e.CreateTime);
         });
     }
 }

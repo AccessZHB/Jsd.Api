@@ -63,6 +63,12 @@ builder.Services.AddScoped<IPaymentRepository, PaymentRepository>();
 builder.Services.AddScoped<PaymentCreateValidator>();
 builder.Services.AddScoped<WriteOffInputValidator>();
 
+// 采购管理模块 —— FluentValidation 校验器（由 Service 显式调用 ValidateAndThrow）
+builder.Services.AddScoped<PurchaseOrderCreateValidator>();
+builder.Services.AddScoped<PurchaseOrderItemValidator>();
+builder.Services.AddScoped<InboundCreateValidator>();
+builder.Services.AddScoped<PayPaymentValidator>();
+
 // ============================================================
 // 3. 依赖注入 —— 服务层（Service）
 // ============================================================
@@ -103,6 +109,26 @@ builder.Services.AddScoped<IMemMemberService, MemMemberService>();
 // 财务结算模块 —— 服务层（应收账款 + 收款核销 + 支付回调）
 builder.Services.AddScoped<IReceivableService, ReceivableService>();
 builder.Services.AddScoped<IPaymentService, PaymentService>();
+
+// 采购管理模块 —— 服务层（采购订单 + 入库 + 应付）
+builder.Services.AddScoped<IPurchaseOrderService, PurchaseOrderService>();
+builder.Services.AddScoped<IInboundService, InboundService>();
+builder.Services.AddScoped<IPayableService, PayableService>();
+
+// 售后管理模块 —— 仓储层（退款 + 退货专用仓储；日志/明细用泛型 IRepository<T>）
+builder.Services.AddScoped<IRefundRepository, RefundRepository>();
+builder.Services.AddScoped<IReturnRepository, ReturnRepository>();
+
+// 售后管理模块 —— FluentValidation 校验器（Service 层显式 ValidateAndThrow）
+builder.Services.AddScoped<CreateRefundValidator>();
+builder.Services.AddScoped<ApproveRefundValidator>();
+builder.Services.AddScoped<CreateReturnValidator>();
+builder.Services.AddScoped<ReceiveReturnValidator>();
+
+// 售后管理模块 —— 服务层（退款 + 退货 + 日志）
+builder.Services.AddScoped<IRefundService, RefundService>();
+builder.Services.AddScoped<IReturnService, ReturnService>();
+builder.Services.AddScoped<IAfterSaleLogService, AfterSaleLogService>();
 
 // ============================================================
 // 4. AutoMapper（自动扫描当前程序集中的 MappingProfile）
