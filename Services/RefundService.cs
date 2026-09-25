@@ -40,6 +40,7 @@ public class RefundService : IRefundService
     private readonly IRepository<MemMember> _memberRepo;
     private readonly IMapper _mapper;
     private readonly CurrentUserService _currentUser;
+    private readonly IBalanceService _balanceService;
     private readonly CreateRefundValidator _createValidator;
     private readonly ApproveRefundValidator _approveValidator;
 
@@ -54,6 +55,7 @@ public class RefundService : IRefundService
         IRepository<MemMember> memberRepo,
         IMapper mapper,
         CurrentUserService currentUser,
+        IBalanceService balanceService,
         CreateRefundValidator createValidator,
         ApproveRefundValidator approveValidator)
     {
@@ -67,6 +69,7 @@ public class RefundService : IRefundService
         _memberRepo = memberRepo;
         _mapper = mapper;
         _currentUser = currentUser;
+        _balanceService = balanceService;
         _createValidator = createValidator;
         _approveValidator = approveValidator;
     }
@@ -368,7 +371,12 @@ public class RefundService : IRefundService
         return ApiResponse<object>.Success(new { id }, "退款执行成功");
     }
 
-    /// <summary>执行退款核心（改实体 + 写日志，不落库；供内部联动复用）</summary>
+    /// <summary>
+    /// 执行退款核心（改实体 + 写售后日志 + 余额退回，不落库；供内部联动复用）。
+    /// 【资金闭环】系统执行「先充值后下单」，订单款从会员余额扣减，
+    /// 因此退款成功时必须把金额退回会员可用余额（mkt_balance_log.change_type=3），
+    /// 与售后日志在同一事务内提交，保证"退款单状态"与"会员余额"永不脱节。
+    /// </summary>
     public async Task ExecuteRefundCoreAsync(TrxRefund refund, long operatorId, string operatorName)
     {
         refund.Status = (int)RefundStatus.Refunded;
@@ -384,6 +392,13 @@ public class RefundService : IRefundService
             Remark = "执行退款（财务打款）",
             CreateTime = DateTime.Now
         });
+
+        // 退款金额退回会员可用余额（幂等由调用方的状态机保证：仅 status=1 才可执行）
+        if (refund.RefundAmount > 0)
+        {
+            await _balanceService.RefundBackAsync(
+                refund.MemberId, refund.RefundAmount, refund.Id, $"退款单 {refund.RefundNo} 退回余额");
+        }
     }
 
     // ============================================================

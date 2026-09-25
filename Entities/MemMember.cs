@@ -57,6 +57,38 @@ public class MemMember
     [Column("account_period")]
     public int AccountPeriod { get; set; } = 0;
 
+    // ===================== 价格策略与会员余额模块（扩展） =====================
+
+    /// <summary>
+    /// 客户等级ID（关联 mem_member_level.id，价格策略与会员余额模块扩展）。
+    /// 取值引擎据此匹配「客户等级价」规则；为 0/NULL 表示未分级，只能走客户专属价或标准售价。
+    /// </summary>
+    [Column("customer_level_id")]
+    public long? CustomerLevelId { get; set; }
+
+    /// <summary>
+    /// 可用余额（元，decimal(10,2)）。
+    /// 【先充值后下单】下单前必须校验 balance ≥ 订单应付金额，不足则拦截下单。
+    /// 所有变动必须与 mkt_balance_log 严格勾稽（同事务写入）。
+    /// </summary>
+    [Column("balance", TypeName = "decimal(10,2)")]
+    public decimal Balance { get; set; } = 0.00m;
+
+    /// <summary>
+    /// 冻结余额（元，decimal(10,2)）。
+    /// 下单时从 balance 等额转入本字段（资金"锁定"），支付成功时从本字段扣减；
+    /// 取消/退款时从本字段退回 balance。保证不会出现"余额被两笔订单同时占用"。
+    /// </summary>
+    [Column("frozen_balance", TypeName = "decimal(10,2)")]
+    public decimal FrozenBalance { get; set; } = 0.00m;
+
+    /// <summary>
+    /// 累计充值总额（元，decimal(10,2)）。
+    /// 只累加 mem_recharge.recharge_amount 本金（赠送金额 gift_amount 不计入），用于客户价值分析。
+    /// </summary>
+    [Column("total_recharge", TypeName = "decimal(10,2)")]
+    public decimal TotalRecharge { get; set; } = 0.00m;
+
     // ===================== 以下为"累计统计"字段，由订单联动回写 =====================
 
     /// <summary>累计消费金额（已支付订单的实付金额之和，单位：元）</summary>

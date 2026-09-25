@@ -130,6 +130,30 @@ builder.Services.AddScoped<IRefundService, RefundService>();
 builder.Services.AddScoped<IReturnService, ReturnService>();
 builder.Services.AddScoped<IAfterSaleLogService, AfterSaleLogService>();
 
+// 价格策略与会员余额模块 —— 仓储层（等级 / 策略 / 充值 / 余额流水专用仓储；
+// 规则、明细、变更日志、价格快照用泛型 IRepository<T>）
+builder.Services.AddScoped<IMemberLevelRepository, MemberLevelRepository>();
+builder.Services.AddScoped<IPriceStrategyRepository, PriceStrategyRepository>();
+builder.Services.AddScoped<IMemRechargeRepository, MemRechargeRepository>();
+builder.Services.AddScoped<IBalanceLogRepository, BalanceLogRepository>();
+
+// 价格策略与会员余额模块 —— FluentValidation 校验器（Service 层显式 ValidateAndThrow）
+builder.Services.AddScoped<CreateMemberLevelValidator>();
+builder.Services.AddScoped<UpdateMemberLevelValidator>();
+builder.Services.AddScoped<CreatePriceStrategyValidator>();
+builder.Services.AddScoped<UpdatePriceStrategyValidator>();
+builder.Services.AddScoped<PriceRuleBatchSaveValidator>();
+builder.Services.AddScoped<QuotationRequestValidator>();
+builder.Services.AddScoped<RechargeCreateValidator>();
+builder.Services.AddScoped<AdminAdjustBalanceValidator>();
+builder.Services.AddScoped<FreezeBalanceValidator>();
+builder.Services.AddScoped<UnfreezeBalanceValidator>();
+builder.Services.AddScoped<DeductBalanceValidator>();
+
+// 价格策略与会员余额模块 —— 服务层（价格策略 / 取价引擎 / 会员余额）
+builder.Services.AddScoped<IPriceService, PriceService>();
+builder.Services.AddScoped<IBalanceService, BalanceService>();
+
 // ============================================================
 // 4. AutoMapper（自动扫描当前程序集中的 MappingProfile）
 // ============================================================

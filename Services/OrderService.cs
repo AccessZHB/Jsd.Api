@@ -1,6 +1,7 @@
 using Jsd.Api.Entities;
 using Jsd.Api.Models.Common;
 using Jsd.Api.Models.Order;
+using Jsd.Api.Models.Price;
 using Jsd.Api.Repositories;
 using Microsoft.EntityFrameworkCore;
 
@@ -61,19 +62,25 @@ public class OrderService : IOrderService
     private readonly IOrderItemRepository _itemRepository;
     private readonly IRepository<MemMember> _memberRepository;
     private readonly IReceivableService _receivableService;
+    private readonly IPriceService _priceService;
+    private readonly IBalanceService _balanceService;
 
     public OrderService(
         AppDbContext db,
         IOrderRepository orderRepository,
         IOrderItemRepository itemRepository,
         IRepository<MemMember> memberRepository,
-        IReceivableService receivableService)
+        IReceivableService receivableService,
+        IPriceService priceService,
+        IBalanceService balanceService)
     {
         _db = db;
         _orderRepository = orderRepository;
         _itemRepository = itemRepository;
         _memberRepository = memberRepository;
         _receivableService = receivableService;
+        _priceService = priceService;
+        _balanceService = balanceService;
     }
 
     // ============================================================
@@ -151,28 +158,44 @@ public class OrderService : IOrderService
     // ============================================================
 
     /// <summary>
-    /// 创建订单：
-    /// 1) 校验商品/SKU 存在性与归属，数量必须 &gt; 0；
-    /// 2) 生成不重复订单号（ORD + yyyyMMddHHmmss + 4位随机数）；
-    /// 3) 从 prod_info / prod_sku 读取名称、规格、图片、零售价写入明细【快照】；
-    /// 4) 后端重算金额（不信任前端）；
-    /// 5) 事务写入主表 + 明细，初始状态 = 待付款 Pending(0)。
-    /// 注意：创建阶段【不扣库存】，库存扣减发生在支付时。
+    /// 创建订单（【先充值后下单】）：
+    /// 1) 通过价格策略引擎取价，得到每行商品的最终成交价（取价失败回退 SKU 标准零售价）；
+    /// 2) 校验商品/SKU 存在性与归属，数量必须 &gt; 0；
+    /// 3) 生成不重复订单号（ORD + yyyyMMddHHmmss + 4位随机数）；
+    /// 4) 从 prod_info / prod_sku 读取名称、规格、图片写入明细【快照】；
+    /// 5) 后端重算金额（不信任前端）；
+    /// 6) 【余额校验 + 冻结】校验会员可用余额 ≥ 应付金额，不足直接拦截（提示先充值）；
+    ///    通过后在同一事务内把金额从 balance 转入 frozen_balance，并写 mkt_balance_log；
+    /// 7) 【价格快照】写入 order_price_snapshot，作为历史价格追溯与毛利分析依据。
+    /// 注意：创建阶段【不扣库存】，库存扣减发生在支付时；冻结额在支付成功时销账（扣减）。
     /// </summary>
     public async Task<ApiResponse<object>> CreateAsync(OrderCreateDto dto)
     {
-        // 1) 校验 + 生成明细快照（不通过抛 InvalidOperationException，由 Controller 转 400）
-        var items = await BuildItemSnapshotsAsync(dto.Items);
+        // 1) 按价格策略取价（会员未指定或取价异常时回退标准售价，不阻断下单）
+        var quotation = await ResolveQuotationAsync(dto);
 
-        // 2) 生成订单号
+        // 2) 校验 + 生成明细快照（不通过抛 InvalidOperationException，由 Controller 转 400）
+        var items = await BuildItemSnapshotsAsync(dto.Items, quotation);
+
+        // 3) 生成订单号
         var orderNo = await GenerateOrderNoAsync();
 
-        // 3) 后端重算金额
+        // 4) 后端重算金额
         var totalAmount = items.Sum(i => i.SubtotalAmount);
         var payAmount = totalAmount - dto.DiscountAmount + dto.FreightAmount;
         if (payAmount < 0) payAmount = 0;   // 优惠大于总额时归零，避免出现负金额
 
-        // 4) 事务写入
+        // 5) 【先充值后下单】余额校验：可用余额必须 ≥ 应付金额
+        if (payAmount > 0)
+        {
+            var check = await _balanceService.CheckEnoughAsync(dto.BuyerId, payAmount);
+            if (check.Code != 200)
+            {
+                return ApiResponse<object>.Fail(check.Message);
+            }
+        }
+
+        // 6) 事务写入
         await using var tx = await _db.Database.BeginTransactionAsync();
         try
         {
@@ -207,16 +230,118 @@ public class OrderService : IOrderService
             await _itemRepository.AddRangeAsync(items);
             await _db.SaveChangesAsync();
 
+            // 7) 【资金冻结】可用余额 → 冻结余额（与订单同事务，失败整体回滚）
+            if (payAmount > 0)
+            {
+                await _balanceService.FreezeForOrderAsync(
+                    dto.BuyerId, payAmount, order.Id, $"下单冻结-{order.OrderNo}");
+            }
+
+            // 8) 【价格快照】冻结下单瞬间的成交价与命中策略
+            await SavePriceSnapshotsAsync(order.Id, items, quotation);
+
+            await _db.SaveChangesAsync();
             await tx.CommitAsync();
 
             return ApiResponse<object>.Success(
                 new { id = order.Id, orderNo = order.OrderNo, payAmount = order.PayAmount },
-                "订单创建成功，待付款");
+                payAmount > 0 ? "订单创建成功，余额已冻结，待付款" : "订单创建成功，待付款");
         }
         catch
         {
             await tx.RollbackAsync();
             throw;
+        }
+    }
+
+    /// <summary>
+    /// 调用价格策略引擎取价，返回「SKU ID → 取价结果」映射。
+    /// 取价失败（会员不存在、无策略、参数异常等）时返回空映射，下单流程回退到 SKU 标准零售价，
+    /// 保证价格模块异常不影响下单主链路。
+    /// </summary>
+    private async Task<Dictionary<long, QuotationResultDto>> ResolveQuotationAsync(OrderCreateDto dto)
+    {
+        var map = new Dictionary<long, QuotationResultDto>();
+        if (dto.BuyerId <= 0 || dto.Items.Count == 0)
+        {
+            return map;
+        }
+
+        try
+        {
+            var request = new QuotationRequestDto
+            {
+                MemMemberId = dto.BuyerId,
+                Items = dto.Items
+                    .Select(i => new QuotationItemInputDto { MaterialId = i.SkuId, Quantity = i.Quantity })
+                    .ToList()
+            };
+
+            var resp = await _priceService.QuotationAsync(request);
+            if (resp.Code == 200 && resp.Data != null)
+            {
+                foreach (var r in resp.Data)
+                {
+                    map[r.MaterialId] = r;
+                }
+            }
+        }
+        catch
+        {
+            // 取价异常不阻断下单：回退标准售价（价格策略是增值能力，不是下单前置条件）
+        }
+
+        return map;
+    }
+
+    /// <summary>
+    /// 批量写入订单价格快照（order_price_snapshot）。
+    /// 命中价格策略的行写入「标准售价 + 命中策略/规则 + 最终成交价 + 折扣详情」；
+    /// 未命中的行也要落库（final_price = standard_price），保证每笔订单的快照完整可追溯。
+    /// </summary>
+    private async Task SavePriceSnapshotsAsync(
+        long orderId, List<TrxOrderItem> items, Dictionary<long, QuotationResultDto> quotation)
+    {
+        foreach (var item in items)
+        {
+            if (quotation.TryGetValue(item.SkuId, out var q))
+            {
+                await _db.OrderPriceSnapshots.AddAsync(new OrderPriceSnapshot
+                {
+                    OrderId = orderId,
+                    OrderItemId = item.Id,
+                    MaterialId = item.SkuId,
+                    ProdInfoId = item.ProdInfoId,   // 数据库该列 NOT NULL，直接取订单明细快照
+                    StandardPrice = q.StandardPrice,
+                    MatchedStrategyId = q.MatchedStrategyId,
+                    MatchedStrategyType = q.MatchedStrategyType,
+                    MatchedRuleId = q.MatchedRuleId,
+                    FinalPrice = q.FinalPrice,
+                    DiscountInfo = PriceService.SerializeDiscountInfo(q.DiscountInfo)
+                });
+            }
+            else
+            {
+                await _db.OrderPriceSnapshots.AddAsync(new OrderPriceSnapshot
+                {
+                    OrderId = orderId,
+                    OrderItemId = item.Id,
+                    MaterialId = item.SkuId,
+                    ProdInfoId = item.ProdInfoId,   // 数据库该列 NOT NULL
+                    StandardPrice = item.UnitPrice,
+                    MatchedStrategyId = 0,
+                    MatchedStrategyType = 0,
+                    MatchedRuleId = 0,
+                    FinalPrice = item.UnitPrice,
+                    DiscountInfo = PriceService.SerializeDiscountInfo(new DiscountInfoDto
+                    {
+                        StandardPrice = item.UnitPrice,
+                        FinalPrice = item.UnitPrice,
+                        DiscountAmount = 0m,
+                        Remark = "未命中价格策略，按商品标准售价"
+                    })
+                });
+            }
         }
     }
 
@@ -272,6 +397,14 @@ public class OrderService : IOrderService
             // 【联动客户统计】订单支付即视为"有效订单"：累计消费 + 订单数 + 最近订单回写。
             // buyer_id 即 mem_member.id；客户不存在（如历史脏数据）时跳过，不影响主流程。
             await UpdateMemberOnPaidAsync(order.BuyerId, order.PayAmount, order.OrderNo);
+
+            // 【先充值后下单 · 第 4 步】支付成功 → 把下单时冻结的金额真正划走（frozen_balance -=）
+            // 冻结不足（如重复支付、数据异常）时抛业务异常，整个支付事务回滚。
+            if (order.PayAmount > 0)
+            {
+                await _balanceService.DeductForOrderAsync(
+                    order.BuyerId, order.PayAmount, order.Id, $"订单支付扣减-{order.OrderNo}");
+            }
 
             await _db.LogStockLogs.AddRangeAsync(logs);
             await _db.SaveChangesAsync();
@@ -412,6 +545,7 @@ public class OrderService : IOrderService
     /// 关闭订单：状态 Pending(0) → Closed(4)，记录关闭原因与时间。
     /// 【状态校验】只有待付款可关闭；已支付订单需走退款流程（本模块不处理退款）。
     /// 关闭不涉及库存回滚（库存本来就没扣）。
+    /// 【资金】下单时冻结的余额同步解冻退回可用余额（frozen → balance），并写解冻流水。
     /// </summary>
     public async Task<ApiResponse<object>> CancelAsync(long id, OrderCloseDto dto)
     {
@@ -426,13 +560,30 @@ public class OrderService : IOrderService
             return ApiResponse<object>.Fail("仅待付款订单可关闭（当前状态：" + OrderStatuses.GetName(order.OrderStatus) + "）");
         }
 
-        order.OrderStatus = OrderStatuses.Closed;
-        order.CloseReason = dto.CloseReason ?? string.Empty;
-        order.CloseTime = DateTime.Now;
+        await using var tx = await _db.Database.BeginTransactionAsync();
+        try
+        {
+            order.OrderStatus = OrderStatuses.Closed;
+            order.CloseReason = dto.CloseReason ?? string.Empty;
+            order.CloseTime = DateTime.Now;
 
-        await _orderRepository.SaveChangesAsync();
+            // 解冻退回（金额以实际冻结额为上限，已扣减的部分不会重复退回）
+            if (order.PayAmount > 0)
+            {
+                await _balanceService.UnfreezeForOrderAsync(
+                    order.BuyerId, order.PayAmount, order.Id, $"订单关闭解冻-{order.OrderNo}");
+            }
 
-        return ApiResponse<object>.Success(new { id = id, orderNo = order.OrderNo }, "订单已关闭");
+            await _orderRepository.SaveChangesAsync();
+            await tx.CommitAsync();
+
+            return ApiResponse<object>.Success(new { id = id, orderNo = order.OrderNo }, "订单已关闭，冻结余额已退回");
+        }
+        catch
+        {
+            await tx.RollbackAsync();
+            throw;
+        }
     }
 
     // ============================================================
@@ -499,9 +650,12 @@ public class OrderService : IOrderService
     /// 校验项：商品存在、SKU 存在、SKU 归属该商品、数量 &gt; 0。
     /// 快照字段（prod_name / sku_name / spec_values / product_image / unit_price）
     /// 一律从 prod_info、prod_sku 实时读取写入，保证商品后续改价改名不影响历史订单。
+    /// 【单价口径】命中价格策略时取最终成交价（QuotationResultDto.FinalPrice），
+    /// 否则取 SKU 零售价；两者都会同步写入 order_price_snapshot。
     /// 不通过时抛 InvalidOperationException（中文消息），由 Controller 统一转 400。
     /// </summary>
-    private async Task<List<TrxOrderItem>> BuildItemSnapshotsAsync(List<OrderItemInputDto> inputs)
+    private async Task<List<TrxOrderItem>> BuildItemSnapshotsAsync(
+        List<OrderItemInputDto> inputs, Dictionary<long, QuotationResultDto> quotation)
     {
         var prodIds = inputs.Select(i => i.ProdInfoId).Distinct().ToList();
         var skuIds = inputs.Select(i => i.SkuId).Distinct().ToList();
@@ -539,6 +693,9 @@ public class OrderService : IOrderService
                 throw new InvalidOperationException("购买数量必须大于0");
             }
 
+            // 单价：优先用价格引擎算出的最终成交价，未命中策略则用 SKU 零售价
+            var unitPrice = quotation.TryGetValue(input.SkuId, out var q) ? q.FinalPrice : sku.RetailPrice;
+
             items.Add(new TrxOrderItem
             {
                 ProdInfoId = input.ProdInfoId,
@@ -549,9 +706,9 @@ public class OrderService : IOrderService
                 SpecValues = sku.SpecValues ?? string.Empty,
                 // 图片优先取 SKU 图，没有则退回商品主图
                 ProductImage = string.IsNullOrWhiteSpace(sku.Image) ? (prod.MainImage ?? string.Empty) : sku.Image,
-                UnitPrice = sku.RetailPrice,                       // 单价 = SKU 当前零售价
+                UnitPrice = unitPrice,                              // 单价 = 策略成交价 / SKU 零售价
                 Quantity = input.Quantity,
-                SubtotalAmount = sku.RetailPrice * input.Quantity   // 小计 = 单价 × 数量
+                SubtotalAmount = unitPrice * input.Quantity         // 小计 = 单价 × 数量
             });
         }
 

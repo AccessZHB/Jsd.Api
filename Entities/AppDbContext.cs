@@ -123,6 +123,32 @@ public class AppDbContext : DbContext
     /// <summary>售后日志表（trx_refund_log，操作留痕）</summary>
     public DbSet<TrxRefundLog> TrxRefundLogs => Set<TrxRefundLog>();
 
+    // ==================== 价格策略与会员余额模块 ====================
+
+    /// <summary>客户等级表（mem_member_level）</summary>
+    public DbSet<MemMemberLevel> MemMemberLevels => Set<MemMemberLevel>();
+
+    /// <summary>价格策略主表（price_strategy）</summary>
+    public DbSet<PriceStrategy> PriceStrategies => Set<PriceStrategy>();
+
+    /// <summary>价格规则表（price_rule）</summary>
+    public DbSet<PriceRule> PriceRules => Set<PriceRule>();
+
+    /// <summary>价格规则明细表（price_rule_item，指定商品 / 阶梯价）</summary>
+    public DbSet<PriceRuleItem> PriceRuleItems => Set<PriceRuleItem>();
+
+    /// <summary>价格变更日志表（price_change_log，审计留痕）</summary>
+    public DbSet<PriceChangeLog> PriceChangeLogs => Set<PriceChangeLog>();
+
+    /// <summary>订单价格快照表（order_price_snapshot，历史价格追溯唯一依据）</summary>
+    public DbSet<OrderPriceSnapshot> OrderPriceSnapshots => Set<OrderPriceSnapshot>();
+
+    /// <summary>充值订单表（mem_recharge，资金入口）</summary>
+    public DbSet<MemRecharge> MemRecharges => Set<MemRecharge>();
+
+    /// <summary>余额流水表（mkt_balance_log，余额真值台账）</summary>
+    public DbSet<MktBalanceLog> MktBalanceLogs => Set<MktBalanceLog>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
@@ -488,6 +514,92 @@ public class AppDbContext : DbContext
         {
             entity.HasIndex(e => e.RefundId);
             entity.HasIndex(e => e.Action);
+            entity.HasIndex(e => e.CreateTime);
+        });
+
+        // ============================================================
+        // 价格策略与会员余额模块（表结构以 price_balance_module.sql 为准，
+        // 列映射由实体 [Column] 特性完成；数据库未建物理外键，一致性由 Service 层事务保证）
+        // ============================================================
+
+        // ---------- mem_member_level 客户等级表 ----------
+        modelBuilder.Entity<MemMemberLevel>(entity =>
+        {
+            entity.HasIndex(e => e.LevelCode).IsUnique();   // 等级编码唯一（uk_level_code）
+            entity.HasIndex(e => e.Status);
+            entity.HasIndex(e => e.SortOrder);
+        });
+
+        // ---------- price_strategy 价格策略主表 ----------
+        modelBuilder.Entity<PriceStrategy>(entity =>
+        {
+            entity.HasIndex(e => e.StrategyNo).IsUnique();  // 策略编号唯一（uk_strategy_no）
+            entity.HasIndex(e => e.StrategyType);
+            entity.HasIndex(e => e.Status);
+            entity.HasIndex(e => e.EffectiveDate);
+            entity.HasIndex(e => e.ExpireDate);
+
+            // 策略 → 规则（删除策略时级联删除其下规则，避免孤儿规则参与取价）
+            entity.HasMany(e => e.Rules)
+                  .WithOne(r => r.Strategy)
+                  .HasForeignKey(r => r.StrategyId)
+                  .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        // ---------- price_rule 价格规则表 ----------
+        modelBuilder.Entity<PriceRule>(entity =>
+        {
+            entity.HasIndex(e => e.StrategyId);
+            entity.HasIndex(e => e.MemMemberId);            // 客户专属价定位
+            entity.HasIndex(e => e.CustomerLevelId);        // 客户等级价定位
+            entity.HasIndex(e => e.Status);
+        });
+
+        // ---------- price_rule_item 价格规则明细表 ----------
+        modelBuilder.Entity<PriceRuleItem>(entity =>
+        {
+            entity.HasIndex(e => e.RuleId);
+            entity.HasIndex(e => e.MaterialId);             // 指定商品定位
+
+            // 明细 → 规则（级联删除，规则重建时明细一并清理）
+            entity.HasOne(e => e.Rule)
+                  .WithMany(r => r.Items)
+                  .HasForeignKey(e => e.RuleId)
+                  .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        // ---------- price_change_log 价格变更日志表 ----------
+        modelBuilder.Entity<PriceChangeLog>(entity =>
+        {
+            entity.HasIndex(e => e.StrategyId);
+            entity.HasIndex(e => e.RuleId);
+            entity.HasIndex(e => e.OperationType);
+            entity.HasIndex(e => e.OperateTime);
+        });
+
+        // ---------- order_price_snapshot 订单价格快照表 ----------
+        modelBuilder.Entity<OrderPriceSnapshot>(entity =>
+        {
+            entity.HasIndex(e => e.OrderId);
+            entity.HasIndex(e => e.OrderItemId);
+            entity.HasIndex(e => e.MaterialId);
+        });
+
+        // ---------- mem_recharge 充值订单表 ----------
+        modelBuilder.Entity<MemRecharge>(entity =>
+        {
+            entity.HasIndex(e => e.RechargeNo).IsUnique();  // 充值单号唯一（uk_recharge_no）
+            entity.HasIndex(e => e.TransactionId).IsUnique(); // 【幂等键】微信流水号唯一，防重复入账
+            entity.HasIndex(e => e.MemMemberId);
+            entity.HasIndex(e => e.Status);
+        });
+
+        // ---------- mkt_balance_log 余额流水表 ----------
+        modelBuilder.Entity<MktBalanceLog>(entity =>
+        {
+            entity.HasIndex(e => e.MemMemberId);
+            entity.HasIndex(e => e.ChangeType);
+            entity.HasIndex(e => new { e.RelatedType, e.RelatedId });  // 关联业务反查
             entity.HasIndex(e => e.CreateTime);
         });
     }
