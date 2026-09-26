@@ -25,6 +25,8 @@
     <!-- Swagger 接口文档 -->
     <PackageReference Include="Swashbuckle.AspNetCore" Version="6.6.2" />
     <PackageReference Include="Swashbuckle.AspNetCore.Filters" Version="7.0.12" />
+    <!-- NPOI（系统管理模块·操作日志导出 Excel，Apache 2.0 协议） -->
+    <PackageReference Include="NPOI" Version="2.7.2" />
   </ItemGroup>
 
 </Project>

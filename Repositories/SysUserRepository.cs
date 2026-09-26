@@ -65,4 +65,28 @@ public class SysUserRepository : Repository<SysUser>, ISysUserRepository
 
         return (items, total);
     }
+
+    /// <summary>
+    /// 分页查询当前仍处于锁定状态的账号（lock_until > 当前时间）
+    /// </summary>
+    public async Task<(List<SysUser> Items, int Total)> GetLockedAccountsAsync(string? memberName, string? ipAddress, int page, int pageSize)
+    {
+        var query = Db.SysUsers
+            .AsNoTracking()
+            .Where(u => u.LockUntil != null && u.LockUntil > DateTime.Now);
+
+        if (!string.IsNullOrWhiteSpace(memberName))
+            query = query.Where(u => u.UserName.Contains(memberName));
+        if (!string.IsNullOrWhiteSpace(ipAddress))
+            query = query.Where(u => u.LastLoginIp != null && u.LastLoginIp.Contains(ipAddress));
+
+        var total = await query.CountAsync();
+        var items = await query
+            .OrderByDescending(u => u.LockUntil)
+            .Skip((page - 1) * pageSize)
+            .Take(pageSize)
+            .ToListAsync();
+
+        return (items, total);
+    }
 }

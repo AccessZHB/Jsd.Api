@@ -1,5 +1,7 @@
 using System.Text;
 using Jsd.Api.Entities;
+using Jsd.Api.Filters;
+using Jsd.Api.Middlewares;
 using Jsd.Api.Repositories;
 using Jsd.Api.Services;
 using Jsd.Api.Validators;
@@ -155,6 +157,53 @@ builder.Services.AddScoped<IPriceService, PriceService>();
 builder.Services.AddScoped<IBalanceService, BalanceService>();
 
 // ============================================================
+// 字典管理模块（字典类型 / 字典数据 / 字典缓存）
+// ============================================================
+// 缓存默认走进程内 MemoryCache（MemoryDictCacheStore）。多实例部署时把下面两行
+// 换成 Redis 实现即可，上层 DictCacheHelper / DictCacheService 一行都不用改。
+builder.Services.AddMemoryCache();
+builder.Services.AddSingleton<IDictCacheStore, MemoryDictCacheStore>();
+builder.Services.AddSingleton<DictCacheHelper>();          // 缓存 Key / TTL 策略
+builder.Services.AddScoped<IDictCacheService, DictCacheService>();
+builder.Services.AddHostedService<DictCachePreloadService>();  // 应用启动预热字典缓存
+
+builder.Services.AddScoped<IDictTypeRepository, DictTypeRepository>();
+builder.Services.AddScoped<IDictDataRepository, DictDataRepository>();
+
+builder.Services.AddScoped<IDictTypeService, DictTypeService>();
+builder.Services.AddScoped<IDictDataService, DictDataService>();
+
+// 字典管理模块 —— FluentValidation 校验器（Service 层显式 ValidateAndThrow）
+builder.Services.AddScoped<CreateDictTypeValidator>();
+builder.Services.AddScoped<UpdateDictTypeValidator>();
+builder.Services.AddScoped<CreateDictDataValidator>();
+builder.Services.AddScoped<UpdateDictDataValidator>();
+
+// ============================================================
+// 系统管理模块（操作日志 / 登录日志 / 登录安全策略）
+// ============================================================
+builder.Services.AddMemoryCache();   // 验证码（TTL 5 分钟）/ refresh jti / 密码版本缓存
+
+// 系统管理模块 —— 仓储层（操作日志 + 登录日志专用仓储；sys_config 用泛型仓储即可，这里直接注入 DbContext）
+builder.Services.AddScoped<ISysOperationLogRepository, SysOperationLogRepository>();
+builder.Services.AddScoped<ISysLoginLogRepository, SysLoginLogRepository>();
+
+// 系统管理模块 —— FluentValidation 校验器（Controller 显式 ValidateAndThrow）
+builder.Services.AddScoped<BatchDeleteValidator>();
+builder.Services.AddScoped<CleanLogValidator>();
+builder.Services.AddScoped<SecurityConfigValidator>();
+builder.Services.AddScoped<ChangePasswordValidator>();
+builder.Services.AddScoped<RefreshTokenValidator>();
+
+// 系统管理模块 —— 操作日志异步写入（Channel 生产者 + 后台消费者，落库不阻塞业务）
+builder.Services.AddSingleton<OperationLogWriter>();
+builder.Services.AddHostedService<OperationLogBackgroundService>();
+
+// 系统管理模块 —— 服务层（登录安全策略 / 日志查询维护）
+builder.Services.AddScoped<ISecurityService, SecurityService>();
+builder.Services.AddScoped<ISystemLogService, SystemLogService>();
+
+// ============================================================
 // 4. AutoMapper（自动扫描当前程序集中的 MappingProfile）
 // ============================================================
 builder.Services.AddAutoMapper(typeof(Program).Assembly);
@@ -225,7 +274,11 @@ builder.Services.AddSwaggerGen(options =>
 //    显式声明 JSON 序列化采用 camelCase 驼峰命名（ASP.NET Core 默认即此策略，
 //    此处显式配置以消除歧义，确保前端 camelCase 字段能正确绑定到后端 PascalCase 属性）。
 // ============================================================
-builder.Services.AddControllers().AddJsonOptions(options =>
+builder.Services.AddControllers(options =>
+{
+    // 系统管理模块：全局注册操作日志采集过滤器（仅对标记 [OperationLog] 的写操作接口生效）
+    options.Filters.Add<OperationLogFilter>();
+}).AddJsonOptions(options =>
 {
     options.JsonSerializerOptions.PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase;
 });
@@ -250,6 +303,7 @@ if (app.Environment.IsDevelopment())
 app.UseCors("AllowAll");            // 跨域
 app.UseStaticFiles();               // 静态文件（wwwroot，上传的图片通过 /upload/... 访问，img 标签不带 JWT 故放行）
 app.UseAuthentication();            // 认证（先）
+app.UseMiddleware<TokenVersionMiddleware>();   // 密码版本校验：改密后旧 JWT 强制下线（系统管理模块）
 app.UseAuthorization();             // 授权（后）
 app.MapControllers();               // 映射控制器路由
 

@@ -27,4 +27,9 @@ public interface ISysUserRepository : IRepository<SysUser>
     /// <param name="pageSize">每页条数</param>
     /// <returns>(当前页数据, 总条数)</returns>
     Task<(List<SysUser> Items, int Total)> GetPagedListAsync(string? keyword, int page, int pageSize);
+
+    /// <summary>
+    /// 分页查询当前仍处于锁定状态的账号（lock_until > 当前时间；系统管理模块·登录安全）
+    /// </summary>
+    Task<(List<SysUser> Items, int Total)> GetLockedAccountsAsync(string? memberName, string? ipAddress, int page, int pageSize);
 }

@@ -18,6 +18,21 @@ public class AppDbContext : DbContext
     /// <summary>后台角色</summary>
     public DbSet<SysRole> SysRoles => Set<SysRole>();
 
+    /// <summary>操作审计日志（sys_operation_log，系统管理模块）</summary>
+    public DbSet<SysOperationLog> SysOperationLogs => Set<SysOperationLog>();
+
+    /// <summary>登录日志（sys_login_log，系统管理模块）</summary>
+    public DbSet<SysLoginLog> SysLoginLogs => Set<SysLoginLog>();
+
+    /// <summary>系统配置（sys_config，登录安全策略等键值对；system_align.sql 建表）</summary>
+    public DbSet<SysConfig> SysConfigs => Set<SysConfig>();
+
+    /// <summary>字典类型（sys_dict_type，字典管理模块）</summary>
+    public DbSet<SysDictType> SysDictTypes => Set<SysDictType>();
+
+    /// <summary>字典数据（sys_dict_data，字典管理模块）</summary>
+    public DbSet<SysDictData> SysDictDatas => Set<SysDictData>();
+
     /// <summary>后台菜单</summary>
     public DbSet<SysMenu> SysMenus => Set<SysMenu>();
 
@@ -174,6 +189,22 @@ public class AppDbContext : DbContext
             entity.HasIndex(e => e.RoleCode).IsUnique();
         });
 
+        // ---------- sys_dict_type 字典类型表 ----------
+        // 与 Jsd_order.sql 的 uk_dict_type / idx_status 保持一致
+        modelBuilder.Entity<SysDictType>(entity =>
+        {
+            entity.HasIndex(e => e.DictType).IsUnique();
+            entity.HasIndex(e => e.Status);
+        });
+
+        // ---------- sys_dict_data 字典数据表 ----------
+        // 复合索引 (dict_type_id, dict_sort) 覆盖「按类型取启用数据并排序」的核心查询
+        modelBuilder.Entity<SysDictData>(entity =>
+        {
+            entity.HasIndex(e => new { e.DictTypeId, e.DictSort });
+            entity.HasIndex(e => e.Status);
+        });
+
         // ---------- sys_menu 菜单表 ----------
         modelBuilder.Entity<SysMenu>(entity =>
         {
@@ -195,6 +226,34 @@ public class AppDbContext : DbContext
                   .WithMany()
                   .HasForeignKey(e => e.MenuId)
                   .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        // ============================================================
+        // 系统管理模块（操作日志 / 登录日志 / 登录安全策略）
+        // 索引与 Jsd_order.sql 建表语句保持一致
+        // ============================================================
+
+        // ---------- sys_operation_log 操作审计日志表 ----------
+        modelBuilder.Entity<SysOperationLog>(entity =>
+        {
+            entity.HasIndex(e => e.OperatorId);
+            entity.HasIndex(e => e.Module);
+            entity.HasIndex(e => e.Status);
+            entity.HasIndex(e => e.CreateTime);
+        });
+
+        // ---------- sys_login_log 登录日志表 ----------
+        modelBuilder.Entity<SysLoginLog>(entity =>
+        {
+            entity.HasIndex(e => e.MemberId);
+            entity.HasIndex(e => e.Status);
+            entity.HasIndex(e => e.CreateTime);
+        });
+
+        // ---------- sys_config 系统配置表 ----------
+        modelBuilder.Entity<SysConfig>(entity =>
+        {
+            entity.HasIndex(e => e.ConfigKey).IsUnique();   // 配置键唯一（uk_config_key）
         });
 
         // ============================================================

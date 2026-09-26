@@ -63,6 +63,18 @@ public class SysUser
     [Column("last_login_ip")]
     public string? LastLoginIp { get; set; }
 
+    /// <summary>连续登录失败次数（达到安全策略阈值锁定账号，成功登录后清零；system_align.sql 补列）</summary>
+    [Column("fail_count")]
+    public int FailCount { get; set; }
+
+    /// <summary>锁定截止时间（NULL-未锁定；达到失败阈值后 = 当前时间 + 锁定时长；system_align.sql 补列）</summary>
+    [Column("lock_until")]
+    public DateTime? LockUntil { get; set; }
+
+    /// <summary>密码版本号（修改密码后 +1，JWT 中 ver 声明低于该值则强制下线；system_align.sql 补列）</summary>
+    [Column("pwd_version")]
+    public int PwdVersion { get; set; }
+
     /// <summary>创建时间（数据库自动生成）</summary>
     [Column("create_time")]
     [DatabaseGenerated(DatabaseGeneratedOption.Identity)]
