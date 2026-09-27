@@ -275,6 +275,22 @@ builder.Services.AddScoped<JobLogQueryValidator>();
 builder.Services.AddHostedService<JobSchedulePreloadService>();  // 启动后把 status=1 的任务注册进调度器
 
 // ============================================================
+// 物流轨迹查询模块（3 个 GET 接口 + 快递100 对接 + 进程内缓存）
+// ============================================================
+// 命名 HttpClient：超时 10s，超时在 LogisticsService 内重试 1 次。
+builder.Services.AddHttpClient("kuaidi", c => c.Timeout = TimeSpan.FromSeconds(10));
+builder.Services.AddScoped<ILogisticsService, LogisticsService>();
+
+// ============================================================
+// 微信支付 主动查单与补单模块（V3：真实验签 + AES 解密 + 主动查单；Quartz 定时查单）
+// ============================================================
+// 命名 HttpClient：调微信支付 V3 接口（查询订单等），超时 10s。
+// 配置项来自 appsettings.json 的 WeChatPay 节（未配置时 PayService 直接 Fail，不影响启动）。
+builder.Services.AddHttpClient("wechatpay", c => c.Timeout = TimeSpan.FromSeconds(10));
+builder.Services.AddScoped<IPayService, PayService>();
+
+
+// ============================================================
 // 4. AutoMapper（自动扫描当前程序集中的 MappingProfile）
 // ============================================================
 builder.Services.AddAutoMapper(typeof(Program).Assembly);

@@ -172,6 +172,17 @@ public class AppDbContext : DbContext
     /// <summary>任务执行日志表（sys_job_log，自动任务模块）</summary>
     public DbSet<SysJobLog> SysJobLogs => Set<SysJobLog>();
 
+    /// <summary>物流轨迹查询日志表（logistics_query_log，物流轨迹查询模块）</summary>
+    public DbSet<LogisticsQueryLog> LogisticsQueryLogs => Set<LogisticsQueryLog>();
+
+    // ==================== 微信支付 主动查单与补单模块 ====================
+
+    /// <summary>支付单表（payment_order，微信支付主动查单与补单模块）</summary>
+    public DbSet<PaymentOrder> PaymentOrders => Set<PaymentOrder>();
+
+    /// <summary>微信支付回调日志表（pay_callback_log，微信支付主动查单与补单模块）</summary>
+    public DbSet<PayCallbackLog> PayCallbackLogs => Set<PayCallbackLog>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
@@ -690,6 +701,44 @@ public class AppDbContext : DbContext
             entity.HasIndex(e => e.Status);                                         // idx_status
             entity.HasIndex(e => e.FireTime);                                       // idx_fire_time
             entity.HasIndex(e => new { e.JobId, e.Status, e.CreateTime });          // idx_job_id_status_time
+        });
+
+        // ============================================================
+        // 物流轨迹查询模块（logistics_query_log）
+        // ============================================================
+
+        // ---------- logistics_query_log 物流轨迹查询日志表 ----------
+        modelBuilder.Entity<LogisticsQueryLog>(entity =>
+        {
+            entity.HasIndex(e => e.TrackingNumber);  // idx_tracking_number（按单号查历史）
+            entity.HasIndex(e => e.OrderId);         // idx_order_id（按订单反查）
+            entity.HasIndex(e => e.CreateTime);      // idx_create_time（按时间范围）
+        });
+
+        // ============================================================
+        // 微信支付 主动查单与补单模块（payment_order / pay_callback_log）
+        // 索引与 payment_align.sql 建表语句保持一致
+        // ============================================================
+
+        // ---------- payment_order 支付单表 ----------
+        modelBuilder.Entity<PaymentOrder>(entity =>
+        {
+            // ⚠️ out_trade_no 唯一索引：拦截重复支付请求的最后一道防线
+            entity.HasIndex(e => e.OutTradeNo).IsUnique();     // uk_out_trade_no
+            // 微信交易号唯一（支付成功后回填；未支付为 NULL，MySQL 唯一索引允许多个 NULL）
+            entity.HasIndex(e => e.TransactionId).IsUnique();  // uk_transaction_id
+            entity.HasIndex(e => e.BizOrderId);                // idx_biz_order_id（按业务订单反查）
+            entity.HasIndex(e => e.Status);                    // idx_status（查单任务扫 PAYING）
+            entity.HasIndex(e => e.ExpireTime);                // idx_expire_time（超时关单扫描）
+            entity.HasIndex(e => e.CreateTime);                // idx_create_time（按时间范围）
+        });
+
+        // ---------- pay_callback_log 微信支付回调日志表 ----------
+        modelBuilder.Entity<PayCallbackLog>(entity =>
+        {
+            entity.HasIndex(e => e.TransactionId);   // idx_transaction_id
+            entity.HasIndex(e => e.HandleStatus);    // idx_handle_status
+            entity.HasIndex(e => e.CreateTime);      // idx_create_time
         });
     }
 }
