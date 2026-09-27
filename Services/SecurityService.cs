@@ -70,6 +70,7 @@ public class SecurityService : ISecurityService
     private readonly ISysLoginLogRepository _loginLogRepository;
     private readonly CurrentUserService _currentUser;
     private readonly JwtService _jwtService;
+    private readonly ISysConfigService _configService;
 
     public SecurityService(
         AppDbContext db,
@@ -77,7 +78,8 @@ public class SecurityService : ISecurityService
         ISysUserRepository userRepository,
         ISysLoginLogRepository loginLogRepository,
         CurrentUserService currentUser,
-        JwtService jwtService)
+        JwtService jwtService,
+        ISysConfigService configService)
     {
         _db = db;
         _cache = cache;
@@ -85,6 +87,7 @@ public class SecurityService : ISecurityService
         _loginLogRepository = loginLogRepository;
         _currentUser = currentUser;
         _jwtService = jwtService;
+        _configService = configService;
     }
 
     // ============================================================
@@ -94,14 +97,16 @@ public class SecurityService : ISecurityService
     /// <inheritdoc/>
     public async Task<SecurityConfigDto> GetConfigAsync()
     {
-        var row = await _db.SysConfigs.AsNoTracking()
-            .FirstOrDefaultAsync(c => c.ConfigKey == ConfigKey);
-        if (row == null || string.IsNullOrWhiteSpace(row.ConfigValue))
+        // 统一走系统配置缓存（config:security.login），未命中由服务层回源并回填
+        var result = await _configService.GetValueAsync(ConfigKey);
+        var value = result.Data?.ConfigValue;
+
+        if (string.IsNullOrWhiteSpace(value))
             return new SecurityConfigDto();   // 无记录返回默认值
 
         try
         {
-            return JsonSerializer.Deserialize<SecurityConfigDto>(row.ConfigValue!,
+            return JsonSerializer.Deserialize<SecurityConfigDto>(value,
                        new JsonSerializerOptions { PropertyNameCaseInsensitive = true })
                    ?? new SecurityConfigDto();
         }
@@ -118,17 +123,9 @@ public class SecurityService : ISecurityService
         var json = JsonSerializer.Serialize(dto,
             new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
 
-        var row = await _db.SysConfigs.FirstOrDefaultAsync(c => c.ConfigKey == ConfigKey);
-        if (row == null)
-        {
-            row = new SysConfig { ConfigKey = ConfigKey, ConfigValue = json, Remark = "登录安全策略" };
-            await _db.SysConfigs.AddAsync(row);
-        }
-        else
-        {
-            row.ConfigValue = json;
-        }
-        await _db.SaveChangesAsync();
+        // 走系统配置服务写入：落库后自动失效 config:security.login 缓存，
+        // 否则下一次读取会拿到修改前的旧策略（验证码开关、锁定阈值都会不生效）
+        await _configService.SetValueAsync(ConfigKey, json, builtIn: true);
 
         // 操作日志由 [OperationLog] 过滤器统一异步采集（Controller 已标记），此处不再重复记录
         return ApiResponse<bool>.Success(true, "安全策略配置已保存");

@@ -164,6 +164,14 @@ public class AppDbContext : DbContext
     /// <summary>余额流水表（mkt_balance_log，余额真值台账）</summary>
     public DbSet<MktBalanceLog> MktBalanceLogs => Set<MktBalanceLog>();
 
+    // ==================== 自动任务模块 ====================
+
+    /// <summary>定时任务定义表（sys_job，自动任务模块）</summary>
+    public DbSet<SysJob> SysJobs => Set<SysJob>();
+
+    /// <summary>任务执行日志表（sys_job_log，自动任务模块）</summary>
+    public DbSet<SysJobLog> SysJobLogs => Set<SysJobLog>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
@@ -254,6 +262,7 @@ public class AppDbContext : DbContext
         modelBuilder.Entity<SysConfig>(entity =>
         {
             entity.HasIndex(e => e.ConfigKey).IsUnique();   // 配置键唯一（uk_config_key）
+            entity.HasIndex(e => e.Status);                 // 按状态筛选（idx_status）
         });
 
         // ============================================================
@@ -660,6 +669,27 @@ public class AppDbContext : DbContext
             entity.HasIndex(e => e.ChangeType);
             entity.HasIndex(e => new { e.RelatedType, e.RelatedId });  // 关联业务反查
             entity.HasIndex(e => e.CreateTime);
+        });
+
+        // ============================================================
+        // 自动任务模块（sys_job / sys_job_log）
+        // 索引与 Jsd_order.sql 建表语句保持一致（idx_job_group / idx_status / idx_job_name 等）
+        // ============================================================
+
+        modelBuilder.Entity<SysJob>(entity =>
+        {
+            entity.HasIndex(e => e.JobGroup);   // idx_job_group
+            entity.HasIndex(e => e.Status);     // idx_status
+            entity.HasIndex(e => e.JobName);    // idx_job_name
+        });
+
+        modelBuilder.Entity<SysJobLog>(entity =>
+        {
+            entity.HasIndex(e => e.JobId);                                          // idx_job_id
+            entity.HasIndex(e => e.JobGroup);                                       // idx_job_group
+            entity.HasIndex(e => e.Status);                                         // idx_status
+            entity.HasIndex(e => e.FireTime);                                       // idx_fire_time
+            entity.HasIndex(e => new { e.JobId, e.Status, e.CreateTime });          // idx_job_id_status_time
         });
     }
 }

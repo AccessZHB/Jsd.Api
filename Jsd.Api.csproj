@@ -22,6 +22,9 @@
     <!-- AutoMapper 对象映射（DI 扩展包要求 AutoMapper 精确为 12.0.1） -->
     <PackageReference Include="AutoMapper" Version="12.0.1" />
     <PackageReference Include="AutoMapper.Extensions.Microsoft.DependencyInjection" Version="12.0.1" />
+    <PackageReference Include="Quartz" Version="3.12.0" />
+    <PackageReference Include="Quartz.Extensions.Hosting" Version="3.12.0" />
+    <PackageReference Include="Quartz.Serialization.Json" Version="3.12.0" />
     <!-- Swagger 接口文档 -->
     <PackageReference Include="Swashbuckle.AspNetCore" Version="6.6.2" />
     <PackageReference Include="Swashbuckle.AspNetCore.Filters" Version="7.0.12" />

@@ -3,8 +3,10 @@ using Jsd.Api.Entities;
 using Jsd.Api.Filters;
 using Jsd.Api.Middlewares;
 using Jsd.Api.Repositories;
+using Jsd.Api.Jobs;
 using Jsd.Api.Services;
 using Jsd.Api.Validators;
+using Quartz;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
@@ -202,6 +204,75 @@ builder.Services.AddHostedService<OperationLogBackgroundService>();
 // 系统管理模块 —— 服务层（登录安全策略 / 日志查询维护）
 builder.Services.AddScoped<ISecurityService, SecurityService>();
 builder.Services.AddScoped<ISystemLogService, SystemLogService>();
+
+// ============================================================
+// 系统管理 - 系统配置模块（9 个接口）
+// ============================================================
+// 缓存默认走进程内 MemoryCache（MemorySysConfigCacheStore）。多实例部署时把下面两行
+// 换成 Redis 实现即可，上层 SysConfigCacheHelper / SysConfigService 一行都不用改。
+builder.Services.AddMemoryCache();
+builder.Services.AddSingleton<ISysConfigCacheStore, MemorySysConfigCacheStore>();
+builder.Services.AddSingleton<SysConfigCacheHelper>();            // 缓存 Key / TTL 策略
+builder.Services.AddScoped<ISysConfigRepository, SysConfigRepository>();
+builder.Services.AddScoped<ISysConfigService, SysConfigService>();
+builder.Services.AddHostedService<SysConfigPreloadService>();     // 应用启动预热配置缓存
+
+// 系统配置模块 —— FluentValidation 校验器（Service / Controller 显式 ValidateAndThrow）
+builder.Services.AddScoped<CreateSysConfigValidator>();
+builder.Services.AddScoped<UpdateSysConfigValidator>();
+builder.Services.AddScoped<ConfigKeysValidator>();
+
+// ============================================================
+// 自动任务模块（定时任务中心，9 个接口 + Quartz 调度器）
+// ============================================================
+// 调度器持久化到 qrtz_* 11 张表（由 Jsd_order.sql 建好），业务侧只读写 sys_job / sys_job_log。
+// 集群部署时多个实例会共享同一套 qrtz 表，Quartz 自带分布式选主，无需额外处理。
+builder.Services.AddQuartz(options =>
+{
+    options.UsePersistentStore(store =>
+    {
+        // 用 JSON 序列化 JobData（Quartz.Serialization.Json 提供的扩展）。
+        // 默认的 binary 序列化跨实例（换机器 / 换版本）会直接反序列化失败。
+        store.UseNewtonsoftJsonSerializer();
+
+        // 用 MySqlConnector provider 而不是 MySql：内置的 MySql provider 需要独立的
+        // MySql.Data 程序集，本项目走 EF Core/Pomelo，只会带入 MySqlConnector，
+        // 选错 provider 会在启动期报 "Error while reading metadata information for provider 'MySql'"。
+        // 表前缀仍是 Quartz 默认 QRTZ_，与 Jsd_order.sql 的建表前缀一致。
+        store.UseMySqlConnector(o => o.ConnectionString = connectionString ?? string.Empty);
+
+        // 用字符串存 JobData 里的值（与 JobDataHelper 的读法保持一致）；
+        // 关掉后二进制序列化也不再参与，换实例不会炸。
+        store.UseProperties = false;
+        // 建表脚本用 QRTZ_ 前缀，与 UseMySql 的默认前缀一致，这里显式关掉 schema 校验的干扰
+        store.PerformSchemaValidation = false;
+    });
+});
+
+// 全局任务监听器统一在 JobSchedulePreloadService 里挂到 Scheduler 上
+// （Quartz 3.x 的 AddQuartzListener 扩展在 3.12.0 里已移除，改为手动挂载）。
+
+// 调度器托管服务（应用启停时自动 Start/Shutdown 调度器）
+builder.Services.AddQuartzHostedService(options => options.WaitForJobsToComplete = true);
+
+// ⚠️ Quartz 3.12 的 AddQuartz 只注册了 ISchedulerFactory，**没有注册 IScheduler**，
+// 必须自己补这一行。少了它，凡是构造时注入 IScheduler 的服务（JobService）会在
+// 首次解析时报 "Unable to resolve service for type 'Quartz.IScheduler'"——
+// 而且是启动期抛在 IHostedService 里，表现为「应用照常启动但所有定时任务不生效」，极难发现。
+// 用 Singleton 保证每次解析拿到同一个 IScheduler 实例（QuartzHostedService 启动时已取过一次）。
+builder.Services.AddSingleton<IScheduler>(sp =>
+    sp.GetRequiredService<ISchedulerFactory>().GetScheduler().GetAwaiter().GetResult());
+
+builder.Services.AddScoped<ISysJobRepository, SysJobRepository>();
+builder.Services.AddScoped<ISysJobLogRepository, SysJobLogRepository>();
+builder.Services.AddScoped<IJobService, JobService>();
+
+// 自动任务模块 —— FluentValidation 校验器（Service / Controller 显式 ValidateAndThrow）
+builder.Services.AddScoped<CreateJobValidator>();
+builder.Services.AddScoped<UpdateJobValidator>();
+builder.Services.AddScoped<JobLogQueryValidator>();
+
+builder.Services.AddHostedService<JobSchedulePreloadService>();  // 启动后把 status=1 的任务注册进调度器
 
 // ============================================================
 // 4. AutoMapper（自动扫描当前程序集中的 MappingProfile）
