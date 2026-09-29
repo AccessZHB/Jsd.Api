@@ -183,6 +183,25 @@ public class AppDbContext : DbContext
     /// <summary>微信支付回调日志表（pay_callback_log，微信支付主动查单与补单模块）</summary>
     public DbSet<PayCallbackLog> PayCallbackLogs => Set<PayCallbackLog>();
 
+    // ==================== 微信支付 T+1 对账模块 ====================
+
+    /// <summary>微信对账单主表（wechat_daily_bill，T+1对账模块）</summary>
+    public DbSet<WechatDailyBill> WechatDailyBills => Set<WechatDailyBill>();
+
+    /// <summary>微信对账单明细表（wechat_bill_detail，T+1对账模块）</summary>
+    public DbSet<WechatBillDetail> WechatBillDetails => Set<WechatBillDetail>();
+
+    /// <summary>对账差异核查表（reconciliation_check，T+1对账模块）</summary>
+    public DbSet<ReconciliationCheck> ReconciliationChecks => Set<ReconciliationCheck>();
+
+    // ==================== 发票与税务管理模块 ====================
+
+    /// <summary>客户开票信息表（customer_invoice_info，发票与税务管理模块）</summary>
+    public DbSet<CustomerInvoiceInfo> CustomerInvoiceInfos => Set<CustomerInvoiceInfo>();
+
+    /// <summary>订单开票记录表（order_invoice，发票与税务管理模块）</summary>
+    public DbSet<OrderInvoice> OrderInvoices => Set<OrderInvoice>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
@@ -739,6 +758,64 @@ public class AppDbContext : DbContext
             entity.HasIndex(e => e.TransactionId);   // idx_transaction_id
             entity.HasIndex(e => e.HandleStatus);    // idx_handle_status
             entity.HasIndex(e => e.CreateTime);      // idx_create_time
+        });
+
+        // ============================================================
+        // 微信支付 T+1 对账模块（wechat_daily_bill / wechat_bill_detail / reconciliation_check）
+        // 索引与 reconciliation_align.sql 建表语句保持一致
+        // ============================================================
+
+        // ---------- wechat_daily_bill 微信对账单主表 ----------
+        modelBuilder.Entity<WechatDailyBill>(entity =>
+        {
+            // ⚠️ 「账单日期 + 账单类型」唯一：保证重复拉取走 UPDATE 而不是堆数据
+            entity.HasIndex(e => new { e.BillDate, e.BillType }).IsUnique();  // uk_bill_date_type
+            entity.HasIndex(e => e.ReconStatus);   // idx_recon_status（查待处理/异常账单）
+            entity.HasIndex(e => e.BillDate);      // idx_bill_date（按日期范围查）
+        });
+
+        // ---------- wechat_bill_detail 微信对账单明细表 ----------
+        modelBuilder.Entity<WechatBillDetail>(entity =>
+        {
+            entity.HasIndex(e => e.BillId);          // idx_bill_id（取某个账单的全部明细）
+            entity.HasIndex(e => e.OutTradeNo);      // idx_out_trade_no（与系统订单勾稽）
+            entity.HasIndex(e => e.TransactionId);   // idx_transaction_id
+            entity.HasIndex(e => e.TradeTime);       // idx_trade_time
+        });
+
+        // ---------- reconciliation_check 对账差异核查表 ----------
+        modelBuilder.Entity<ReconciliationCheck>(entity =>
+        {
+            entity.HasIndex(e => e.BillId);          // idx_bill_id（查某天的差异）
+            entity.HasIndex(e => e.DiffType);        // idx_diff_type（按差异类型筛选）
+            entity.HasIndex(e => e.HandleStatus);    // idx_handle_status（待处理/已处理）
+            entity.HasIndex(e => e.OutTradeNo);      // idx_out_trade_no
+            entity.HasIndex(e => e.CreateTime);      // idx_create_time（核查时间范围）
+        });
+
+        // ============================================================
+        // 发票与税务管理模块（customer_invoice_info / order_invoice）
+        // 索引与 invoice_align.sql 建表语句保持一致
+        // ============================================================
+
+        // ---------- customer_invoice_info 客户开票信息表 ----------
+        modelBuilder.Entity<CustomerInvoiceInfo>(entity =>
+        {
+            entity.HasIndex(e => e.CustomerId);   // idx_customer_id（查某客户的抬头列表）
+            entity.HasIndex(e => e.IsDefault);    // idx_is_default（筛默认抬头）
+            entity.HasIndex(e => e.Status);       // idx_status（停用过滤）
+        });
+
+        // ---------- order_invoice 订单开票记录表 ----------
+        modelBuilder.Entity<OrderInvoice>(entity =>
+        {
+            // ⚠️ 发票号码唯一：防财务重复录入同一张票（NULL 不参与唯一约束，申请中阶段可为空）
+            entity.HasIndex(e => e.InvoiceNo).IsUnique();  // uk_invoice_no
+            entity.HasIndex(e => e.OrderId);               // idx_order_id（按订单查开票记录/查重）
+            entity.HasIndex(e => e.PaymentId);             // idx_payment_id
+            entity.HasIndex(e => e.Status);                // idx_status（待开票/已开票/已作废）
+            entity.HasIndex(e => e.InvoiceDate);           // idx_invoice_date（按开票期间统计）
+            entity.HasIndex(e => e.CreateTime);            // idx_create_time（按申请时间）
         });
     }
 }

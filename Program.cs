@@ -73,6 +73,12 @@ builder.Services.AddScoped<PurchaseOrderItemValidator>();
 builder.Services.AddScoped<InboundCreateValidator>();
 builder.Services.AddScoped<PayPaymentValidator>();
 
+// 发票与税务管理模块 —— FluentValidation 校验器（由 Service 显式调用 ValidateAndThrow）
+builder.Services.AddScoped<SaveCustomerInvoiceValidator>();
+builder.Services.AddScoped<ApplyInvoiceValidator>();
+builder.Services.AddScoped<CancelInvoiceValidator>();
+builder.Services.AddScoped<IssueInvoiceValidator>();
+
 // ============================================================
 // 3. 依赖注入 —— 服务层（Service）
 // ============================================================
@@ -288,6 +294,20 @@ builder.Services.AddScoped<ILogisticsService, LogisticsService>();
 // 配置项来自 appsettings.json 的 WeChatPay 节（未配置时 PayService 直接 Fail，不影响启动）。
 builder.Services.AddHttpClient("wechatpay", c => c.Timeout = TimeSpan.FromSeconds(10));
 builder.Services.AddScoped<IPayService, PayService>();
+
+// ============================================================
+// 微信支付 T+1 对账模块（拉账单 → 解析 CSV → 双向勾稽 → 差异核查；Quartz 每天凌晨3点自动跑）
+// ============================================================
+// 复用 WeChatPay 节配置 + wechatpay 客户端申请账单；账单文件下载量大且慢，单独给它 180s 超时。
+builder.Services.AddHttpClient("wechatbill", c => c.Timeout = TimeSpan.FromSeconds(180));
+builder.Services.AddScoped<IReconciliationService, ReconciliationService>();
+
+// ============================================================
+// 发票与税务管理模块（开票抬头维护 → 开票申请 → 财务回写票号 / 第三方平台开票 → 作废红冲）
+// ============================================================
+// 第三方开票平台（百望云/航信等）客户端：未配置 Invoice 节时不调用，走人工开票分支。
+builder.Services.AddHttpClient("invoice", c => c.Timeout = TimeSpan.FromSeconds(30));
+builder.Services.AddScoped<IInvoiceService, InvoiceService>();
 
 
 // ============================================================
