@@ -30,12 +30,14 @@ public class ReconciliationController : ControllerBase
     /// GET /api/reconciliation/download?billDate=2026-09-27&amp;billType=1&amp;force=false
     /// </summary>
     [HttpGet("download")]
-    public async Task<ApiResponse<BillDownloadDto>> Download([FromQuery] DateTime billDate,
+    public async Task<ApiResponse<BillDownloadDto>> Download([FromQuery] DateTime? billDate,
         [FromQuery] int billType = (int)BillType.All, [FromQuery] bool force = false)
     {
         try
         {
-            return await _reconciliationService.DownloadDailyBillAsync(billDate, billType, force);
+            // 与 run 保持一致的兜底：不传账单日时默认取【昨天】（T+1 账单）
+            var date = billDate ?? DateTime.Today.AddDays(-1);
+            return await _reconciliationService.DownloadDailyBillAsync(date, billType, force);
         }
         catch (Exception ex)
         {
@@ -65,14 +67,18 @@ public class ReconciliationController : ControllerBase
 
     /// <summary>
     /// 查询指定账单日的对账报告（不重跑对账，读已落地数据）。
+    /// 不传 billDate 时默认查询【昨天】的报告。
     /// GET /api/reconciliation/report?billDate=2026-09-27
     /// </summary>
     [HttpGet("report")]
-    public async Task<ApiResponse<ReconciliationReportDto>> Report([FromQuery] DateTime billDate)
+    public async Task<ApiResponse<ReconciliationReportDto>> Report([FromQuery] DateTime? billDate)
     {
         try
         {
-            return await _reconciliationService.GetReportAsync(billDate);
+            // 修复：原签名为非空 DateTime，未传参会得到 0001-01-01，
+            // 导致提示"尚未账单数据：0001-01-01"。此处与 run/download 对齐，默认昨天。
+            var date = billDate ?? DateTime.Today.AddDays(-1);
+            return await _reconciliationService.GetReportAsync(date);
         }
         catch (Exception ex)
         {

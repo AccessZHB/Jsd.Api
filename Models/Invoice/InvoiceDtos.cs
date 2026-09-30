@@ -216,9 +216,14 @@ public class InvoiceQueryDto
 
     /// <summary>
     /// 下单买家ID（按 trx_order.buyer_id 过滤）。
-    /// ⚠️ 注意口径：本系统「客户」指 mem_member（客户开票信息挂在客户上），
-    ///    而订单 trx_order 只记录 buyer_id（sys_user.id），二者暂无直接关联字段，
-    ///    故列表查询按【下单买家】过滤，不要与 customer_invoice_info.customer_id 混淆。
+    ///
+    /// ✅ 口径澄清（BUG-05 修正，此前注释有误）：
+    ///    trx_order.buyer_id 指向的就是【mem_member.id】（会员/客户），
+    ///    与后台管理账号 sys_user 物理隔离（依据 customer_init.sql 建表注释，
+    ///    以及 OrderService 中 MemMemberId = dto.BuyerId、PriceService 中
+    ///    MemMembers.Any(m => m.Id == x.o.BuyerId) 的实际用法）。
+    ///    因此它与 customer_invoice_info.customer_id 是【同一套 ID】，
+    ///    可直接用 buyer_id 关联该客户保存的开票抬头，并非"两套互不相干的人"。
     /// </summary>
     public long? BuyerId { get; set; }
 

@@ -185,7 +185,24 @@ public class OrderService : IOrderService
         var payAmount = totalAmount - dto.DiscountAmount + dto.FreightAmount;
         if (payAmount < 0) payAmount = 0;   // 优惠大于总额时归零，避免出现负金额
 
-        // 5) 【先充值后下单】余额校验：可用余额必须 ≥ 应付金额
+        // 5) 校验下单买家（会员）必须存在
+        //
+        // ⚠️ 口径说明（BUG-05）：trx_order.buyer_id 指向【mem_member.id（会员/客户）】，
+        //    与后台管理账号 sys_user 物理隔离（依据：customer_init.sql 建表注释）。
+        //    即 customer_invoice_info.customer_id 与 order.buyer_id 本就是同一套 ID。
+        //
+        // 原缺陷：下单仅在余额校验时"顺带"检查会员；若应付金额为 0（全额优惠）或改用
+        // 微信/线下支付，就会写入 buyer_id 指向不存在会员的【孤儿订单】，后续退款执行、
+        // 余额扣减、应收生成、开票归属全部报「会员不存在」。
+        var buyerExists = await _db.MemMembers.AsNoTracking()
+            .AnyAsync(m => m.Id == dto.BuyerId && m.IsDeleted == 0);
+        if (!buyerExists)
+        {
+            return ApiResponse<object>.Fail(
+                $"下单买家不存在（buyerId={dto.BuyerId}）：请先在【客户管理】创建该客户（mem_member），且未被删除");
+        }
+
+        // 6) 【先充值后下单】余额校验：可用余额必须 ≥ 应付金额
         if (payAmount > 0)
         {
             var check = await _balanceService.CheckEnoughAsync(dto.BuyerId, payAmount);
@@ -195,7 +212,7 @@ public class OrderService : IOrderService
             }
         }
 
-        // 6) 事务写入
+        // 7) 事务写入
         await using var tx = await _db.Database.BeginTransactionAsync();
         try
         {

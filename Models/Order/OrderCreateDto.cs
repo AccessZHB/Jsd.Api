@@ -12,7 +12,11 @@ namespace Jsd.Api.Models.Order;
 /// </summary>
 public class OrderCreateDto
 {
-    /// <summary>买家ID（关联 sys_user.id）</summary>
+    /// <summary>
+    /// 买家ID —— 关联【mem_member.id】（会员/客户），不是后台管理员 sys_user.id
+    /// 依据：customer_init.sql「trx_order.buyer_id 即指向 mem_member.id（会员=买家，物理隔离于后台 sys_user）」
+    /// 后端会校验该会员存在且未删除，否则下单被拒（避免产生孤儿订单）
+    /// </summary>
     public long BuyerId { get; set; }
 
     // ==================== 收货信息 ====================

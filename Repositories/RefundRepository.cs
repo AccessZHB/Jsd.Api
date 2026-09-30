@@ -75,10 +75,16 @@ public class RefundRepository : Repository<TrxRefund>, IRefundRepository
 
     public async Task<decimal> GetRefundedSumByOrderAsync(long orderId)
     {
-        // 已退款(2) + 待退款(1) 视为"已占用额度"；驳回(3)不计入
+        // 已占用额度 = 待审核(0) + 待退款(1) + 已退款(2)；驳回(3)不计入
+        //
+        // ⚠️ 缺陷修复：原实现只统计 已通过(1)+已退款(2)，漏掉了【待审核(0)】。
+        // 后果：同一订单可反复提交"待审核"退款单，每笔都只与"已通过金额"比较，
+        //       若审核人逐笔通过，累计退款将超过订单实付金额（资损风险）。
+        //       例：订单实付 179，可先提交 5 笔 170 的待审核申请，全部通过后退款 850。
         return await Db.TrxRefunds.AsNoTracking()
             .Where(r => r.OrderId == orderId
-                        && (r.Status == (int)RefundStatus.Approved
+                        && (r.Status == (int)RefundStatus.Pending
+                            || r.Status == (int)RefundStatus.Approved
                             || r.Status == (int)RefundStatus.Refunded))
             .SumAsync(r => (decimal?)r.RefundAmount) ?? 0m;
     }
