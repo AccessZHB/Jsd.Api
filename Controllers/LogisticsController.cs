@@ -1,3 +1,4 @@
+using Jsd.Api.Attributes;
 using Jsd.Api.Models.Common;
 using Jsd.Api.Models.Logistics;
 using Jsd.Api.Services;
@@ -51,6 +52,7 @@ public class LogisticsController : ControllerBase
     /// <summary>查询物流轨迹（命中缓存直接返回，否则调第三方）</summary>
     /// <remarks>GET /api/logistics/track?trackingNumber=xxx[&amp;carrierCode=shunfeng][&amp;orderId=123]</remarks>
     [HttpGet("track")]
+    [Permission(LogisticsPermissions.Query)]   // order:logistics:query —— 后端硬校验，未授权角色返回 403
     public async Task<ApiResponse<LogisticsTrackResult>> Track(
         [FromQuery] string trackingNumber,
         [FromQuery] string? carrierCode = null,

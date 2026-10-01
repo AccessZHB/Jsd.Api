@@ -1,6 +1,7 @@
 using System.Text;
 using Jsd.Api.Entities;
 using Jsd.Api.Filters;
+using Jsd.Api.Attributes;
 using Jsd.Api.Middlewares;
 using Jsd.Api.Repositories;
 using Jsd.Api.Jobs;
@@ -386,6 +387,9 @@ builder.Services.AddControllers(options =>
 {
     // 系统管理模块：全局注册操作日志采集过滤器（仅对标记 [OperationLog] 的写操作接口生效）
     options.Filters.Add<OperationLogFilter>();
+    // 接口权限拦截：解析 Action 上的 [Permission] 特性，按 sys_role_menu + sys_menu 做服务端硬校验。
+    // 过滤器内部已处理「未标注特性放行」「超级管理员放行」「无权限返回 403」，存量接口零改动。
+    options.Filters.Add<PermissionFilter>();
 }).AddJsonOptions(options =>
 {
     options.JsonSerializerOptions.PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase;

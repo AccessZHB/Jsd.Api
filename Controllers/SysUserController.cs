@@ -53,6 +53,7 @@ public class SysUserController : ControllerBase
     /// 请求体：{ "userName": "zhangsan", "password": "123456", "realName": "张三", "roleId": 2 }
     /// </summary>
     [HttpPost]
+    [Permission(SysUserPermissions.Add)]   // system:user:add —— 后端硬校验，未授权角色返回 403
     public async Task<ApiResponse<object>> Create([FromBody] SysUserCreateDto dto)
     {
         return await _userService.CreateAsync(dto);
