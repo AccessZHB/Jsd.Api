@@ -1,3 +1,4 @@
+using Jsd.Api.Attributes;
 using Jsd.Api.Models.Common;
 using Jsd.Api.Models.SysRole;
 using Jsd.Api.Services;
@@ -39,6 +40,19 @@ public class SysRoleController : ControllerBase
     public async Task<ApiResponse<SysRoleDto>> GetById(long id)
     {
         return await _roleService.GetByIdAsync(id);
+    }
+
+    /// <summary>
+    /// 新增角色
+    /// 请求体：{ "roleName": "运营专员", "roleCode": "operation", "dataScope": 1, "status": 1 }
+    /// 示例：POST /api/sys/role
+    /// </summary>
+    [HttpPost]
+    [OperationLog("系统管理", "新增角色")]
+    public async Task<ApiResponse<object>> Create([FromBody] SysRoleCreateDto dto)
+    {
+        // [ApiController] + DTO 上的 [Required]/[Range] 特性自动做参数校验，不通过直接返回 400
+        return await _roleService.CreateAsync(dto);
     }
 
     /// <summary>

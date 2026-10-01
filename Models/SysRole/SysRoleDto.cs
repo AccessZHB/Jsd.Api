@@ -59,6 +59,32 @@ public class SysRoleUpdateDto
 }
 
 /// <summary>
+/// 新增角色请求 DTO（POST /api/sys/role）
+/// </summary>
+public class SysRoleCreateDto
+{
+    /// <summary>角色名称</summary>
+    [Required(ErrorMessage = "角色名称不能为空")]
+    [StringLength(50, ErrorMessage = "角色名称最长50个字符")]
+    public string RoleName { get; set; } = string.Empty;
+
+    /// <summary>角色编码（唯一）</summary>
+    [Required(ErrorMessage = "角色编码不能为空")]
+    [StringLength(30, ErrorMessage = "角色编码最长30个字符")]
+    public string RoleCode { get; set; } = string.Empty;
+
+    /// <summary>数据权限：1-全部 2-本部门 3-仅本人</summary>
+    public int DataScope { get; set; } = 1;
+
+    /// <summary>状态：1-启用 0-停用</summary>
+    public int Status { get; set; } = 1;
+
+    /// <summary>备注</summary>
+    [StringLength(255)]
+    public string? Remark { get; set; }
+}
+
+/// <summary>
 /// 给角色分配菜单权限请求 DTO（PUT /api/sys/role/auth）
 /// </summary>
 public class SysRoleAuthDto

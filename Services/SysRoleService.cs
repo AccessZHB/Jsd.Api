@@ -86,6 +86,32 @@ public class SysRoleService : ISysRoleService
     }
 
     /// <summary>
+    /// 新增角色（角色编码唯一性校验，默认数据权限=全部、状态=启用）
+    /// </summary>
+    public async Task<ApiResponse<object>> CreateAsync(SysRoleCreateDto dto)
+    {
+        // 1. 角色编码唯一性校验
+        if (await _roleRepository.AnyAsync(r => r.RoleCode == dto.RoleCode))
+        {
+            return ApiResponse<object>.Fail("角色编码已存在");
+        }
+
+        // 2. 构造实体（手动映射，避免依赖 AutoMapper Profile 配置）
+        var role = new SysRole
+        {
+            RoleName = dto.RoleName,
+            RoleCode = dto.RoleCode,
+            DataScope = dto.DataScope,
+            Status = dto.Status,
+            Remark = dto.Remark,
+        };
+        await _roleRepository.AddAsync(role);
+        await _roleRepository.SaveChangesAsync();
+
+        return ApiResponse<object>.Success(new { id = role.Id }, "角色新增成功");
+    }
+
+    /// <summary>
     /// 根据 ID 删除角色（单个删除 = 只有一个元素的批量删除，逻辑完全复用）
     /// </summary>
     public Task<ApiResponse<object>> DeleteAsync(long id)

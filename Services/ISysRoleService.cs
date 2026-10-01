@@ -19,6 +19,11 @@ public interface ISysRoleService
     Task<ApiResponse<SysRoleDto>> GetByIdAsync(long id);
 
     /// <summary>
+    /// 新增角色
+    /// </summary>
+    Task<ApiResponse<object>> CreateAsync(SysRoleCreateDto dto);
+
+    /// <summary>
     /// 修改角色
     /// </summary>
     Task<ApiResponse<object>> UpdateAsync(SysRoleUpdateDto dto);
