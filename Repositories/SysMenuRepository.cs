@@ -28,6 +28,17 @@ public class SysMenuRepository : Repository<SysMenu>, ISysMenuRepository
     }
 
     /// <summary>
+    /// 查询全部菜单（不过滤，菜单管理页专用：隐藏/停用的菜单也要能看到并管理）
+    /// </summary>
+    public async Task<List<SysMenu>> GetAllMenusAsync()
+    {
+        return await Db.SysMenus
+            .AsNoTracking()
+            .OrderBy(m => m.SortOrder)
+            .ToListAsync();
+    }
+
+    /// <summary>
     /// 查询某角色已授权的菜单ID集合
     /// </summary>
     public async Task<List<long>> GetMenuIdsByRoleIdAsync(long roleId)

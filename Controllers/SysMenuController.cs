@@ -33,6 +33,16 @@ public class SysMenuController : ControllerBase
     }
 
     /// <summary>
+    /// 获取全部菜单树（菜单管理页专用，含隐藏/停用菜单和按钮）
+    /// 示例：GET /api/sys/menu/all
+    /// </summary>
+    [HttpGet("all")]
+    public async Task<ApiResponse<List<MenuTreeNodeDto>>> GetAllMenus()
+    {
+        return await _menuService.GetAllMenusTreeAsync();
+    }
+
+    /// <summary>
     /// 根据 ID 获取菜单详情（用于修改表单回显）
     /// 示例：GET /api/sys/menu/100
     /// </summary>

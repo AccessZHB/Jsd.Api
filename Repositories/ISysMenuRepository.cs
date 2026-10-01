@@ -14,6 +14,11 @@ public interface ISysMenuRepository : IRepository<SysMenu>
     Task<List<SysMenu>> GetAllVisibleMenusAsync();
 
     /// <summary>
+    /// 查询全部菜单（不做任何过滤，含隐藏/停用/按钮，菜单管理页专用）。
+    /// </summary>
+    Task<List<SysMenu>> GetAllMenusAsync();
+
+    /// <summary>
     /// 根据角色ID查询已授权的菜单ID列表（查 sys_role_menu 关联表）。
     /// </summary>
     Task<List<long>> GetMenuIdsByRoleIdAsync(long roleId);

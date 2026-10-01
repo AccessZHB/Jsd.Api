@@ -86,6 +86,17 @@ public class SysMenuService : ISysMenuService
     }
 
     /// <summary>
+    /// 全部菜单树（菜单管理页专用）：
+    /// 不按用户授权/可见/状态过滤——管理页必须能看到隐藏、停用的菜单和按钮，才能管理它们。
+    /// </summary>
+    public async Task<ApiResponse<List<MenuTreeNodeDto>>> GetAllMenusTreeAsync()
+    {
+        var allMenus = await _menuRepository.GetAllMenusAsync();
+        var tree = BuildTree(allMenus, rootParentId: 0);
+        return ApiResponse<List<MenuTreeNodeDto>>.Success(tree);
+    }
+
+    /// <summary>
     /// 根据 ID 获取菜单详情
     /// </summary>
     public async Task<ApiResponse<SysMenuDto>> GetByIdAsync(long id)
@@ -235,6 +246,8 @@ public class SysMenuService : ISysMenuService
                     MenuType = m.MenuType,
                     Permission = m.Permission,
                     SortOrder = m.SortOrder,
+                    Visible = m.Visible,
+                    Status = m.Status,
                     Children = BuildNodes(m.Id)   // 递归挂子菜单
                 })
                 .ToList();

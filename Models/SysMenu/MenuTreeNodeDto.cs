@@ -32,6 +32,12 @@ public class MenuTreeNodeDto
     /// <summary>排序号</summary>
     public int SortOrder { get; set; }
 
+    /// <summary>是否显示：1-显示 0-隐藏（菜单管理页用）</summary>
+    public int Visible { get; set; }
+
+    /// <summary>状态：1-正常 0-停用（菜单管理页用）</summary>
+    public int Status { get; set; }
+
     /// <summary>子菜单（递归树形结构）</summary>
     public List<MenuTreeNodeDto> Children { get; set; } = new();
 }
