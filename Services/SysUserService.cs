@@ -18,19 +18,22 @@ public class SysUserService : ISysUserService
     private readonly CurrentUserService _currentUser;
     private readonly IMapper _mapper;
     private readonly IMemoryCache _cache;
+    private readonly IPermissionService _permissionService;
 
     public SysUserService(
         ISysUserRepository userRepository,
         IRepository<SysRole> roleRepository,
         CurrentUserService currentUser,
         IMapper mapper,
-        IMemoryCache cache)
+        IMemoryCache cache,
+        IPermissionService permissionService)
     {
         _userRepository = userRepository;
         _roleRepository = roleRepository;
         _currentUser = currentUser;
         _mapper = mapper;
         _cache = cache;
+        _permissionService = permissionService;
     }
 
     /// <summary>
@@ -176,7 +179,10 @@ public class SysUserService : ISysUserService
     /// 管理员重置指定用户密码。
     /// 与"修改密码"（个人中心，需校验旧密码）不同：此接口仅管理员后台使用，不需要旧密码。
     /// 采用 BCrypt(cost=12) 落库 + pwd_version+1，中间件据此拒绝该用户所有旧 JWT，强制重新登录。
-    /// 业务保护：不允许在此重置当前登录账号自身（应使用"修改密码"入口，带旧密码校验）。
+    /// 服务端硬护栏（此前仅前端 v-permission 收敛，任意已登录用户都能调用）：
+    ///   1) 不允许在此重置当前登录账号自身（应使用"修改密码"入口，带旧密码校验）；
+    ///   2) 非超级管理员禁止重置超级管理员账号；
+    ///   3) 非超级管理员必须拥有 system:user:edit 权限（能编辑账号即可重置其密码）。
     /// </summary>
     public async Task<ApiResponse<object>> ResetPasswordAsync(long id, ResetPasswordDto dto)
     {
@@ -193,7 +199,20 @@ public class SysUserService : ISysUserService
             return ApiResponse<object>.Fail("不能重置当前登录账号的密码，请使用\"修改密码\"");
         }
 
-        // 3. BCrypt(cost=12) 加密 + 密码版本号 +1（强制该用户重新登录）
+        // 3. 角色校验（服务端硬护栏）
+        //    3.1 非超级管理员禁止重置超级管理员账号（防止越权篡改超管）
+        if (user.IsSuper == 1 && !_currentUser.IsSuper)
+        {
+            return ApiResponse<object>.Fail("无权限重置超级管理员密码", 403);
+        }
+        //    3.2 非超级管理员必须拥有"修改用户"权限（system:user:edit）
+        if (!_currentUser.IsSuper
+            && !await _permissionService.HasPermissionAsync(SysUserPermissions.Edit))
+        {
+            return ApiResponse<object>.Fail("无权限重置用户密码", 403);
+        }
+
+        // 4. BCrypt(cost=12) 加密 + 密码版本号 +1（强制该用户重新登录）
         user.Password = BCrypt.Net.BCrypt.HashPassword(dto.Password, workFactor: 12);
         user.PwdVersion = user.PwdVersion + 1;
         await _userRepository.SaveChangesAsync();

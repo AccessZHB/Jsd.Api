@@ -32,4 +32,14 @@ public class CurrentUserService
     /// <summary>是否超级管理员（JWT 中 is_super 声明为 "1"）</summary>
     public bool IsSuper
         => _httpContextAccessor.HttpContext?.User?.FindFirstValue("is_super") == "1";
+
+    /// <summary>当前登录用户角色ID（JWT 中 role_id 声明；未绑定角色或解析失败返回 null）</summary>
+    public long? RoleId
+    {
+        get
+        {
+            var v = _httpContextAccessor.HttpContext?.User?.FindFirstValue("role_id");
+            return long.TryParse(v, out var r) && r > 0 ? r : null;
+        }
+    }
 }

@@ -38,4 +38,23 @@ public class SysMenuRepository : Repository<SysMenu>, ISysMenuRepository
             .Select(rm => rm.MenuId)
             .ToListAsync();
     }
+
+    /// <summary>
+    /// 查询某角色拥有的全部权限标识（button 级 permission）。
+    /// 关联 sys_menu 后取非空的 permission 并去重。
+    /// </summary>
+    public async Task<List<string>> GetPermissionsByRoleIdAsync(long roleId)
+    {
+        return await Db.SysRoleMenus
+            .AsNoTracking()
+            .Where(rm => rm.RoleId == roleId)
+            .Join(Db.SysMenus,
+                rm => rm.MenuId,
+                m => m.Id,
+                (rm, m) => m.Permission)
+            .Where(p => !string.IsNullOrEmpty(p))
+            .Select(p => p!)
+            .Distinct()
+            .ToListAsync();
+    }
 }

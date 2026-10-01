@@ -85,6 +85,7 @@ builder.Services.AddScoped<IssueInvoiceValidator>();
 builder.Services.AddScoped<IAuthService, AuthService>();
 builder.Services.AddScoped<ISysMenuService, SysMenuService>();
 builder.Services.AddScoped<ISysUserService, SysUserService>();
+builder.Services.AddScoped<IPermissionService, PermissionService>();  // 后端按权限硬校验（如重置密码）
 builder.Services.AddScoped<ISysRoleService, SysRoleService>();
 builder.Services.AddSingleton<JwtService>();          // JWT 无状态，单例即可
 builder.Services.AddScoped<CurrentUserService>();     // 依赖 HttpContext，按请求域

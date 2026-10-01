@@ -85,6 +85,10 @@ public class SysUserController : ControllerBase
     /// 重置用户密码（管理员后台，不需要旧密码）
     /// 请求体：{ "password": "123456" }
     /// 示例：PUT /api/sys/user/1/password
+    /// 服务端硬护栏（见 SysUserService.ResetPasswordAsync）：
+    ///   - 禁止重置当前登录账号自身；
+    ///   - 非超级管理员禁止重置超级管理员账号；
+    ///   - 非超级管理员须拥有 system:user:edit 权限。
     /// </summary>
     [HttpPut("{id}/password")]
     [OperationLog("系统管理", "重置用户密码")]
