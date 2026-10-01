@@ -389,6 +389,9 @@ builder.Services.AddControllers(options =>
 }).AddJsonOptions(options =>
 {
     options.JsonSerializerOptions.PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase;
+    // 兼容前端 "yyyy-MM-dd HH:mm:ss"（空格分隔）日期格式，默认 System.Text.Json 只认 ISO 8601 的 T 分隔，
+    // 否则含日期的表单（价格策略有效期等）反序列化失败 → [ApiController] 返回 400
+    options.JsonSerializerOptions.Converters.Add(new Jsd.Api.Converters.FlexibleDateTimeConverter());
 });
 
 // 确保静态文件根目录存在（图片上传保存到 wwwroot/upload）
