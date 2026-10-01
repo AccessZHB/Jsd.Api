@@ -63,5 +63,9 @@ public class MappingProfile : Profile
             .ForMember(e => e.Id, opt => opt.Ignore())
             .ForMember(e => e.CreateTime, opt => opt.Ignore())
             .ForMember(e => e.UpdateTime, opt => opt.Ignore());
+        CreateMap<SysMenuCreateDto, SysMenu>()
+            .ForMember(e => e.Id, opt => opt.Ignore())
+            .ForMember(e => e.CreateTime, opt => opt.Ignore())
+            .ForMember(e => e.UpdateTime, opt => opt.Ignore());
     }
 }

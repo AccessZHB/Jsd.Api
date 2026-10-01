@@ -125,6 +125,38 @@ public class SysMenuService : ISysMenuService
     }
 
     /// <summary>
+    /// 新增菜单（顶级或挂到指定父级下）。
+    /// 业务校验：父级必须存在；父级不能是按钮（按钮不允许挂子级）。
+    /// </summary>
+    public async Task<ApiResponse<object>> CreateAsync(SysMenuCreateDto dto)
+    {
+        SysMenu? parent = null;
+
+        // 1. 挂到父级下时，父级必须存在
+        if (dto.ParentId != 0)
+        {
+            parent = await _menuRepository.GetByIdAsync(dto.ParentId);
+            if (parent == null)
+            {
+                return ApiResponse<object>.Fail("上级菜单不存在", 404);
+            }
+
+            // 2. 按钮是叶子节点，不允许再挂子级
+            if (parent.MenuType == 3)
+            {
+                return ApiResponse<object>.Fail("按钮类型不允许添加子级菜单");
+            }
+        }
+
+        // 3. 映射入库（CreateTime/UpdateTime 由数据库自动生成，实体标注了 DatabaseGenerated）
+        var menu = _mapper.Map<SysMenu>(dto);
+        await _menuRepository.AddAsync(menu);
+        await _menuRepository.SaveChangesAsync();
+
+        return ApiResponse<object>.Success(new { id = menu.Id }, "菜单新增成功");
+    }
+
+    /// <summary>
     /// 根据 ID 删除菜单（单个删除 = 只有一个元素的批量删除，逻辑完全复用）
     /// </summary>
     public Task<ApiResponse<object>> DeleteAsync(long id)

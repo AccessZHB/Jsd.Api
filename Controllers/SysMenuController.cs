@@ -1,3 +1,4 @@
+using Jsd.Api.Attributes;
 using Jsd.Api.Models.Common;
 using Jsd.Api.Models.SysMenu;
 using Jsd.Api.Services;
@@ -39,6 +40,19 @@ public class SysMenuController : ControllerBase
     public async Task<ApiResponse<SysMenuDto>> GetById(long id)
     {
         return await _menuService.GetByIdAsync(id);
+    }
+
+    /// <summary>
+    /// 新增菜单（顶级或挂到指定父级下）
+    /// 请求体：{ "parentId": 1, "menuName": "用户管理", "path": "user", "menuType": 2 }
+    /// 示例：POST /api/sys/menu
+    /// </summary>
+    [HttpPost]
+    [OperationLog("系统管理", "新增菜单")]
+    public async Task<ApiResponse<object>> Create([FromBody] SysMenuCreateDto dto)
+    {
+        // [ApiController] + DTO 上的 [Required]/[Range] 特性自动做参数校验，不通过直接返回 400
+        return await _menuService.CreateAsync(dto);
     }
 
     /// <summary>

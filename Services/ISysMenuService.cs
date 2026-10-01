@@ -25,6 +25,11 @@ public interface ISysMenuService
     Task<ApiResponse<object>> UpdateAsync(SysMenuUpdateDto dto);
 
     /// <summary>
+    /// 新增菜单（顶级或挂到指定父级下）
+    /// </summary>
+    Task<ApiResponse<object>> CreateAsync(SysMenuCreateDto dto);
+
+    /// <summary>
     /// 根据 ID 删除菜单（含子菜单保护）
     /// </summary>
     Task<ApiResponse<object>> DeleteAsync(long id);
