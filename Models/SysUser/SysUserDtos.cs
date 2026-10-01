@@ -105,3 +105,14 @@ public class SysUserUpdateDto
     /// <summary>状态：1-正常 0-禁用</summary>
     public int Status { get; set; } = 1;
 }
+
+/// <summary>
+/// 重置密码请求 DTO（管理员后台重置指定用户密码，不需要旧密码）
+/// </summary>
+public class ResetPasswordDto
+{
+    /// <summary>新密码（明文，服务端会 BCrypt 加密后入库）</summary>
+    [Required(ErrorMessage = "密码不能为空")]
+    [StringLength(50, MinimumLength = 6, ErrorMessage = "密码长度需为6~50个字符")]
+    public string Password { get; set; } = string.Empty;
+}

@@ -4,6 +4,7 @@ using Jsd.Api.Models.Common;
 using Jsd.Api.Models.SysUser;
 using Jsd.Api.Repositories;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Caching.Memory;
 
 namespace Jsd.Api.Services;
 
@@ -16,17 +17,20 @@ public class SysUserService : ISysUserService
     private readonly IRepository<SysRole> _roleRepository;
     private readonly CurrentUserService _currentUser;
     private readonly IMapper _mapper;
+    private readonly IMemoryCache _cache;
 
     public SysUserService(
         ISysUserRepository userRepository,
         IRepository<SysRole> roleRepository,
         CurrentUserService currentUser,
-        IMapper mapper)
+        IMapper mapper,
+        IMemoryCache cache)
     {
         _userRepository = userRepository;
         _roleRepository = roleRepository;
         _currentUser = currentUser;
         _mapper = mapper;
+        _cache = cache;
     }
 
     /// <summary>
@@ -166,5 +170,37 @@ public class SysUserService : ISysUserService
         await _userRepository.SaveChangesAsync();
 
         return ApiResponse<object>.Success(new { deleted = users.Count }, "删除成功");
+    }
+
+    /// <summary>
+    /// 管理员重置指定用户密码。
+    /// 与"修改密码"（个人中心，需校验旧密码）不同：此接口仅管理员后台使用，不需要旧密码。
+    /// 采用 BCrypt(cost=12) 落库 + pwd_version+1，中间件据此拒绝该用户所有旧 JWT，强制重新登录。
+    /// 业务保护：不允许在此重置当前登录账号自身（应使用"修改密码"入口，带旧密码校验）。
+    /// </summary>
+    public async Task<ApiResponse<object>> ResetPasswordAsync(long id, ResetPasswordDto dto)
+    {
+        // 1. 用户必须存在（GetByIdAsync 返回被 EF 跟踪的实体，改完 SaveChanges 即更新）
+        var user = await _userRepository.GetByIdAsync(id);
+        if (user == null)
+        {
+            return ApiResponse<object>.Fail("用户不存在", 404);
+        }
+
+        // 2. 业务保护：不允许管理员在此重置自己的密码（应走"修改密码"，带旧密码校验）
+        if (id == _currentUser.UserId)
+        {
+            return ApiResponse<object>.Fail("不能重置当前登录账号的密码，请使用\"修改密码\"");
+        }
+
+        // 3. BCrypt(cost=12) 加密 + 密码版本号 +1（强制该用户重新登录）
+        user.Password = BCrypt.Net.BCrypt.HashPassword(dto.Password, workFactor: 12);
+        user.PwdVersion = user.PwdVersion + 1;
+        await _userRepository.SaveChangesAsync();
+
+        // 4. 立即失效密码版本缓存（中间件缓存 60 秒，主动清除保证重置即刻下线）
+        _cache.Remove($"pwd_version:{id}");
+
+        return ApiResponse<object>.Success(new { id = id }, "密码重置成功，该用户需重新登录");
     }
 }

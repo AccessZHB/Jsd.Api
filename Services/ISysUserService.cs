@@ -34,6 +34,11 @@ public interface ISysUserService
     Task<ApiResponse<object>> DeleteAsync(long id);
 
     /// <summary>
+    /// 管理员重置指定用户密码（BCrypt 加密 + pwd_version+1 强制下线，不需要旧密码）
+    /// </summary>
+    Task<ApiResponse<object>> ResetPasswordAsync(long id, ResetPasswordDto dto);
+
+    /// <summary>
     /// 批量删除用户
     /// </summary>
     Task<ApiResponse<object>> DeleteBatchAsync(long[] ids);

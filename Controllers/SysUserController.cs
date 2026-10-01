@@ -1,3 +1,4 @@
+using Jsd.Api.Attributes;
 using Jsd.Api.Models.Common;
 using Jsd.Api.Models.SysUser;
 using Jsd.Api.Services;
@@ -78,6 +79,18 @@ public class SysUserController : ControllerBase
     public async Task<ApiResponse<object>> Delete(long id)
     {
         return await _userService.DeleteAsync(id);
+    }
+
+    /// <summary>
+    /// 重置用户密码（管理员后台，不需要旧密码）
+    /// 请求体：{ "password": "123456" }
+    /// 示例：PUT /api/sys/user/1/password
+    /// </summary>
+    [HttpPut("{id}/password")]
+    [OperationLog("系统管理", "重置用户密码")]
+    public async Task<ApiResponse<object>> ResetPassword(long id, [FromBody] ResetPasswordDto dto)
+    {
+        return await _userService.ResetPasswordAsync(id, dto);
     }
 
     /// <summary>
