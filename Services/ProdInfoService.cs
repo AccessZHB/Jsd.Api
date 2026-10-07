@@ -210,6 +210,14 @@ public class ProdInfoService : IProdInfoService
         // spec_values 现在存的是ID组合（"10,15"），这里反查成展示文本与规格明细，方便前端直接显示
         await FillSpecValueTextAsync(dto.Skus);
 
+        // 价格区间 / 库存总量（与分页列表接口保持一致：详情页也要展示起售价与库存）
+        if (dto.Skus.Count > 0)
+        {
+            dto.MinPrice = dto.Skus.Min(s => s.RetailPrice);
+            dto.MaxPrice = dto.Skus.Max(s => s.RetailPrice);
+            dto.TotalStock = dto.Skus.Sum(s => s.Stock);
+        }
+
         return ApiResponse<ProdInfoDetailDto>.Success(dto);
     }
 

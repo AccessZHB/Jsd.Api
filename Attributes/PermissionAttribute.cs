@@ -9,18 +9,23 @@ namespace Jsd.Api.Attributes;
 /// 且该条 sys_menu 记录需要通过 sys_role_menu 关联到当前用户的 role_id，接口才放行。
 /// </summary>
 /// <remarks>
-/// 类级与方法级都支持：Action 上标注了以 Action 为准；未标注则回退到 Controller 类级；
-/// 都没有则该接口不参与权限校验（沿用原有「仅登录即可访问」行为，保证存量接口零改动）。
+/// 1. 类级与方法级都支持：Action 上标注了以 Action 为准；未标注则回退到 Controller 类级；
+///    都没有则该接口不参与权限校验（沿用原有「仅登录即可访问」行为，保证存量接口零改动）。
+/// 2. 支持传入多个权限标识（params），为「或」关系：命中任意一个即放行。
+///    典型场景：某接口被多个业务入口共用（如 GET /sys/menu/all 同时被「菜单管理页」
+///    和「角色分配菜单弹窗」调用），此时声明 [Permission(SysMenuPermissions.List, SysRolePermissions.Grant)]
+///    可避免只挂单一权限而误伤另一入口。
+///    该语义与前端 v-hasPermi / v-permission 传数组的「或」逻辑保持一致。
 /// </remarks>
 [AttributeUsage(AttributeTargets.Method | AttributeTargets.Class, AllowMultiple = false, Inherited = true)]
 public class PermissionAttribute : Attribute
 {
-    /// <summary>权限标识（对应 sys_menu.permission，如 system:user:add / order:logistics:query）</summary>
-    public PermissionAttribute(string permission)
+    /// <summary>权限标识（对应 sys_menu.permission，可传多个，或关系）</summary>
+    public PermissionAttribute(params string[] permissions)
     {
-        Permission = permission;
+        Permissions = permissions ?? System.Array.Empty<string>();
     }
 
-    /// <summary>所需权限标识</summary>
-    public string Permission { get; }
+    /// <summary>所需权限标识集合（任意一个命中即视为有权）</summary>
+    public string[] Permissions { get; }
 }

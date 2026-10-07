@@ -42,16 +42,17 @@ public class PermissionFilter : IAsyncActionFilter
 
     public async Task OnActionExecutionAsync(ActionExecutingContext context, ActionExecutionDelegate next)
     {
-        var required = ResolveRequiredPermission(context.ActionDescriptor);
+        var required = ResolveRequiredPermissions(context.ActionDescriptor);
 
         // 未标注 [Permission] 的接口不校验权限（登录即可访问），保证存量接口零改动
-        if (required is null)
+        if (required is null || required.Length == 0)
         {
             await next();
             return;
         }
 
-        if (await _permissionService.HasPermissionAsync(required))
+        // 多个标识为「或」关系：命中任意一个即放行
+        if (await _permissionService.HasAnyPermissionAsync(required))
         {
             await next();
             return;
@@ -61,12 +62,12 @@ public class PermissionFilter : IAsyncActionFilter
             "权限校验失败：user={UserId}, role={RoleId}, 缺少权限={Permission}, 请求={Method} {Path}",
             _currentUser.UserId,
             _currentUser.RoleId?.ToString() ?? "null",
-            required,
+            string.Join(" 或 ", required),
             context.HttpContext.Request.Method,
             context.HttpContext.Request.Path);
 
         context.Result = new JsonResult(
-            ApiResponse<object>.Fail($"无权限访问该功能（缺少权限：{required}）", StatusCodes.Status403Forbidden))
+            ApiResponse<object>.Fail($"无权限访问该功能（缺少权限：{string.Join(" 或 ", required)}）", StatusCodes.Status403Forbidden))
         {
             StatusCode = StatusCodes.Status403Forbidden
         };
@@ -75,7 +76,7 @@ public class PermissionFilter : IAsyncActionFilter
     /// <summary>
     /// 解析当前接口所需的权限标识：优先 Action 方法级，回退 Controller 类级。
     /// </summary>
-    private static string? ResolveRequiredPermission(ActionDescriptor descriptor)
+    private static string[]? ResolveRequiredPermissions(ActionDescriptor descriptor)
     {
         if (descriptor is ControllerActionDescriptor actionDescriptor)
         {
@@ -83,14 +84,14 @@ public class PermissionFilter : IAsyncActionFilter
             var methodAttr = actionDescriptor.MethodInfo.GetCustomAttribute<PermissionAttribute>(inherit: false);
             if (methodAttr is not null)
             {
-                return methodAttr.Permission;
+                return methodAttr.Permissions;
             }
 
             // 回退到 Controller 类级（inherit: true 支持继承基类 Controller 上的声明）
-            return actionDescriptor.MethodInfo.DeclaringType?.GetCustomAttribute<PermissionAttribute>(inherit: true)?.Permission;
+            return actionDescriptor.MethodInfo.DeclaringType?.GetCustomAttribute<PermissionAttribute>(inherit: true)?.Permissions;
         }
 
         // 非 Controller 场景兜底：从 EndpointMetadata 中取
-        return descriptor.EndpointMetadata.OfType<PermissionAttribute>().FirstOrDefault()?.Permission;
+        return descriptor.EndpointMetadata.OfType<PermissionAttribute>().FirstOrDefault()?.Permissions;
     }
 }

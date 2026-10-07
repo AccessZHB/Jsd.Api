@@ -68,6 +68,30 @@ public class OrderController : ControllerBase
             orderNo, orderStatus, startTime, endTime, page, pageSize);
     }
 
+    /// <summary>
+    /// 会员「我的订单」（权限：会员令牌）
+    /// 仅返回当前登录会员（JWT member_id → buyer_id）名下的订单，
+    /// 在 Service 内强制 .Where(o => o.BuyerId == 当前会员ID) 过滤，绝不信任前端 userId。
+    /// 管理员令牌（无 member_id 声明）调用会被拒绝（401）。
+    /// 示例：GET /api/order/my?orderStatus=1&amp;page=1&amp;pageSize=10
+    /// </summary>
+    /// <param name="orderStatus">订单状态筛选（可空=全部）</param>
+    /// <param name="startTime">下单时间起（可空）</param>
+    /// <param name="endTime">下单时间止（可空）</param>
+    /// <param name="page">页码，默认1</param>
+    /// <param name="pageSize">每页条数，默认10</param>
+    [HttpGet("my")]
+    [ProducesResponseType(typeof(ApiResponse<PagedResult<OrderListDto>>), StatusCodes.Status200OK)]
+    public async Task<ApiResponse<PagedResult<OrderListDto>>> GetMyOrders(
+        [FromQuery] int? orderStatus,
+        [FromQuery] DateTime? startTime,
+        [FromQuery] DateTime? endTime,
+        [FromQuery] int page = 1,
+        [FromQuery] int pageSize = 10)
+    {
+        return await _orderService.GetMyOrdersAsync(orderStatus, startTime, endTime, page, pageSize);
+    }
+
     // ============================================================
     // 2. 订单详情
     // ============================================================
@@ -221,5 +245,57 @@ public class OrderController : ControllerBase
     public async Task<ApiResponse<object>> Cancel(long id, [FromBody] OrderCloseDto? dto)
     {
         return await _orderService.CancelAsync(id, dto ?? new OrderCloseDto());
+    }
+
+    // ============================================================
+    // 10. 订单预计算（确认页初始化）
+    // ============================================================
+
+    /// <summary>
+    /// 10. 订单预计算（确认订单页初始化）
+    /// 后端重算每行单价（命中价格策略取成交价，否则 SKU 零售价）、小计、应付金额，并校验库存。
+    /// 金额不信任前端：pay = Σ(单价×数量) - discount + freight。
+    /// 示例：POST /api/order/pre-calculate  body: { "items": [{ "skuId": 1, "quantity": 2 }], "discountAmount": 0, "freightAmount": 0 }
+    /// </summary>
+    [HttpPost("pre-calculate")]
+    [ProducesResponseType(typeof(ApiResponse<OrderPreCalculateResultDto>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ApiResponse<OrderPreCalculateResultDto>), StatusCodes.Status400BadRequest)]
+    public async Task<ApiResponse<OrderPreCalculateResultDto>> PreCalculate([FromBody] OrderPreCalculateDto dto)
+    {
+        try
+        {
+            return await _orderService.PreCalculateAsync(dto);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return ApiResponse<OrderPreCalculateResultDto>.Fail(ex.Message);
+        }
+    }
+
+    // ============================================================
+    // 11. 订单提交（确认页「提交订单」——余额支付，单事务）
+    // ============================================================
+
+    /// <summary>
+    /// 11. 订单提交（确认订单页，会员余额支付专用）
+    /// 单事务内完成：解析收货信息 → 后端重算金额 → 创建订单(待付款) → 校验并扣减库存 → 立即余额直扣 → 置已支付。
+    /// 任一步失败整体回滚；余额不足时返回明确提示，前端引导充值。
+    /// 示例：POST /api/order/submit
+    ///   body: { "addressId": 12, "items": [{ "skuId": 1, "quantity": 2, "specJson": "...", "processingStatus": "unprocessed" }] }
+    /// </summary>
+    [HttpPost("submit")]
+    [ProducesResponseType(typeof(ApiResponse<OrderSubmitResultDto>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ApiResponse<OrderSubmitResultDto>), StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(typeof(ApiResponse<OrderSubmitResultDto>), StatusCodes.Status401Unauthorized)]
+    public async Task<ApiResponse<OrderSubmitResultDto>> Submit([FromBody] OrderSubmitDto dto)
+    {
+        try
+        {
+            return await _orderService.SubmitAsync(dto);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return ApiResponse<OrderSubmitResultDto>.Fail(ex.Message);
+        }
     }
 }

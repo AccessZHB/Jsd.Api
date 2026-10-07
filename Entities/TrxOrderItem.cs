@@ -69,6 +69,17 @@ public class TrxOrderItem
     [Column("subtotal_amount", TypeName = "decimal(12,2)")]
     public decimal SubtotalAmount { get; set; }
 
+    /// <summary>
+    /// 镜片规格 + 验光数据 JSON（确认订单页传入的 spec_json 落库处，如 {spec_text, prescription}）。
+    /// spec_values 仍保留 SKU 级规格快照，本列承载更丰富的镜片参数/光度信息。
+    /// </summary>
+    [Column("spec_json")]
+    public string SpecJson { get; set; } = string.Empty;
+
+    /// <summary>加工状态：unprocessed-待加工（需邮寄镜架）/ processed-已加工（无需邮寄）</summary>
+    [Column("processing_status")]
+    public string ProcessingStatus { get; set; } = "processed";
+
     /// <summary>创建时间（数据库自动生成）</summary>
     [Column("create_time")]
     [DatabaseGenerated(DatabaseGeneratedOption.Identity)]

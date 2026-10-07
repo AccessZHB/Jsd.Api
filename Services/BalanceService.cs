@@ -411,6 +411,99 @@ public class BalanceService : IBalanceService
     }
 
     /// <summary>
+    /// 会员自助充值（小程序「立即充值」入口，未对接微信支付，调用即直接入账）。
+    /// 事务内完成：建充值单（已到账）+ 余额 CAS 累加 + 累计充值累加 + 写充值流水。
+    /// 任何环节失败整体回滚，保证充值单与余额严格勾稽（after_balance = 操作后余额）。
+    /// </summary>
+    public async Task<ApiResponse<RechargeDto>> SelfRechargeAsync(decimal amount)
+    {
+        if (amount <= 0)
+        {
+            return ApiResponse<RechargeDto>.Fail("充值金额必须大于 0");
+        }
+
+        var member = await _memberRepo.FirstOrDefaultAsync(m => m.Id == _currentUser.MemberId && m.IsDeleted == 0);
+        if (member == null)
+        {
+            return ApiResponse<RechargeDto>.Fail("会员不存在", 404);
+        }
+
+        var now = DateTime.Now;
+        var rounded = decimal.Round(amount, 2);
+
+        // 先建充值单（落库拿 ID），再在事务内入账，与后台代充保持一致
+        MemRecharge? entity = null;
+        for (var i = 0; i < 5; i++)
+        {
+            var candidate = _rechargeRepo.GenerateRechargeNo();
+            if (await _rechargeRepo.ExistsRechargeNoAsync(candidate))
+            {
+                continue;
+            }
+
+            entity = new MemRecharge
+            {
+                RechargeNo = candidate,
+                MemMemberId = member.Id,
+                RechargeAmount = rounded,
+                GiftAmount = 0m,
+                // 自助充值：微信支付占位（未对接 SDK），渠道记"自助"
+                PayType = (int)PayType.Wechat,
+                RechargeChannel = (int)RechargeChannel.Self,
+                Status = (int)RechargeStatus.Pending,
+                // 无微信交易号，用充值单号合成幂等键，防止重复入账
+                TransactionId = $"SELF-{candidate}",
+                OperatorId = null
+            };
+
+            await _rechargeRepo.AddAsync(entity);
+            try
+            {
+                await _db.SaveChangesAsync();
+                break;
+            }
+            catch (DbUpdateException)
+            {
+                entity = null;
+            }
+        }
+
+        if (entity == null)
+        {
+            return ApiResponse<RechargeDto>.Fail("充值单号生成失败，请稍后重试");
+        }
+
+        await using var tx = await _db.Database.BeginTransactionAsync();
+        try
+        {
+            entity.Status = (int)RechargeStatus.Paid;
+            entity.PayTime = now;
+
+            // 本金入账：CAS 更新余额 + 累加累计充值 + 写充值流水（after_balance 为真值）
+            await CreditAsync(
+                entity.MemMemberId, rounded, rounded,
+                BalanceChangeType.Recharge, RelatedRecharge, entity.Id,
+                $"会员自助充值：本金 {rounded:0.00}（{entity.RechargeNo}）", null, now);
+
+            await _db.SaveChangesAsync();
+            await tx.CommitAsync();
+        }
+        catch (InvalidOperationException ex)
+        {
+            await tx.RollbackAsync();
+            return ApiResponse<RechargeDto>.Fail(ex.Message);
+        }
+        catch
+        {
+            await tx.RollbackAsync();
+            throw;
+        }
+
+        var result = (await MapRechargeDtosAsync(new List<MemRecharge> { entity }, true)).First();
+        return ApiResponse<RechargeDto>.Success(result, "充值成功");
+    }
+
+    /// <summary>
     /// 充值退款（仅已支付可退）：
     /// 事务内 充值单状态 → 已退款，并从会员可用余额【扣回】本金+赠送（赠送一并收回），写后台调整流水。
     /// 余额不足时拒绝退款并给出明确提示（说明该客户已把钱用于下单）。
@@ -788,6 +881,50 @@ public class BalanceService : IBalanceService
 
         await CreditAsync(memMemberId, amt, null, BalanceChangeType.RefundBack, RelatedRefund, refundId,
             remark ?? $"退款退回 {amt:0.00} 元（退款单 {refundId}）", _currentUser.UserId, DateTime.Now);
+    }
+
+    /// <summary>
+    /// 订单【直接扣减可用余额】（余额支付：确认订单页「提交即扣款」）。
+    /// 直接减少 mem_member.balance（CAS 乐观锁），并写 OrderDeduct 流水（after_balance 为真值）。
+    /// 与 DeductForOrderAsync（扣冻结额）的区别：本方法不依赖先验冻结，单事务下单支付时使用。
+    /// 余额不足或并发冲突抛 InvalidOperationException，由调用方事务整体回滚。
+    /// </summary>
+    public async Task DeductDirectForOrderAsync(long memMemberId, decimal amount, long orderId, string? remark = null)
+    {
+        var amt = decimal.Round(amount, 2);
+        if (amt <= 0)
+        {
+            return;
+        }
+
+        var member = await RequireMemberAsync(memMemberId);
+
+        for (var attempt = 0; attempt < MaxCasRetry; attempt++)
+        {
+            var before = member.Balance;
+            var beforeFrozen = member.FrozenBalance;
+
+            if (before < amt)
+            {
+                throw new InvalidOperationException(
+                    $"余额不足：当前可用余额 {before:0.00} 元，本次需支付 {amt:0.00} 元，请先充值后再下单");
+            }
+
+            var afterBalance = before - amt;
+
+            var ok = await CasUpdateAsync(member.Id, before, beforeFrozen, afterBalance, beforeFrozen, null);
+            if (!ok)
+            {
+                await _db.Entry(member).ReloadAsync();   // 并发冲突：重读最新值重试
+                continue;
+            }
+
+            await AppendLogAsync(member.Id, BalanceChangeType.OrderDeduct, amt, before, afterBalance,
+                RelatedOrder, orderId, remark ?? $"订单支付扣减 {amt:0.00} 元（订单 {orderId}）", null, DateTime.Now);
+            return;
+        }
+
+        throw new InvalidOperationException("余额扣减并发冲突，请重试");
     }
 
     // ============================================================

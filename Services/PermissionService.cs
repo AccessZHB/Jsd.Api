@@ -1,3 +1,4 @@
+using System.Linq;
 using Jsd.Api.Repositories;
 
 namespace Jsd.Api.Services;
@@ -42,5 +43,34 @@ public class PermissionService : IPermissionService
 
         var permissions = await _menuRepository.GetPermissionsByRoleIdAsync(roleId.Value);
         return permissions.Contains(permission);
+    }
+
+    /// <summary>
+    /// 判断当前用户是否拥有"任意一个"权限标识（或关系）。
+    /// 只查询一次角色权限集合再取交集，避免逐条校验导致的重复数据库访问。
+    /// 用于 [Permission] 特性声明多个权限的场景（接口被多个业务入口共用）。
+    /// </summary>
+    public async Task<bool> HasAnyPermissionAsync(params string[] permissions)
+    {
+        if (permissions is null || permissions.Length == 0)
+        {
+            return false;
+        }
+
+        // 超级管理员拥有全部权限
+        if (_currentUser.IsSuper)
+        {
+            return true;
+        }
+
+        // 普通用户必须有绑定角色
+        var roleId = _currentUser.RoleId;
+        if (roleId == null || roleId <= 0)
+        {
+            return false;
+        }
+
+        var owned = await _menuRepository.GetPermissionsByRoleIdAsync(roleId.Value);
+        return permissions.Any(owned.Contains);
     }
 }

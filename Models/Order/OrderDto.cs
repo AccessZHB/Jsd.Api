@@ -70,6 +70,9 @@ public static class PayMethods
     /// <summary>3-货到付款</summary>
     public const int CashOnDelivery = 3;
 
+    /// <summary>4-会员余额支付（小程序确认订单页，目前唯一支持的方式）</summary>
+    public const int Balance = 4;
+
     /// <summary>支付方式 → 中文名</summary>
     public static string GetName(int payMethod) => payMethod switch
     {
@@ -77,6 +80,7 @@ public static class PayMethods
         Online => "在线支付",
         BankTransfer => "银行转账",
         CashOnDelivery => "货到付款",
+        Balance => "余额支付",
         _ => "未知"
     };
 }

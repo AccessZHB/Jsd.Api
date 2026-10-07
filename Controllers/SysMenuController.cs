@@ -1,6 +1,7 @@
 using Jsd.Api.Attributes;
 using Jsd.Api.Models.Common;
 using Jsd.Api.Models.SysMenu;
+using Jsd.Api.Models.SysRole;
 using Jsd.Api.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -35,8 +36,14 @@ public class SysMenuController : ControllerBase
     /// <summary>
     /// 获取全部菜单树（菜单管理页专用，含隐藏/停用菜单和按钮）
     /// 示例：GET /api/sys/menu/all
+    ///
+    /// 权限说明：本接口同时被两个入口调用 ——
+    ///   菜单管理页（system:menu:list）与角色管理「分配菜单」弹窗（system:role:grant），
+    /// 因此这里声明两个权限取"或"，只挂单一权限会误伤另一个入口。
+    /// 注意：/sys/menu（当前用户菜单树）不含按钮节点，授权场景必须用本接口。
     /// </summary>
     [HttpGet("all")]
+    [Permission(SysMenuPermissions.List, SysRolePermissions.Grant)]
     public async Task<ApiResponse<List<MenuTreeNodeDto>>> GetAllMenus()
     {
         return await _menuService.GetAllMenusTreeAsync();

@@ -118,6 +118,9 @@ builder.Services.AddScoped<IOrderService, OrderService>();
 // 客户管理模块 —— 服务层
 builder.Services.AddScoped<IMemMemberService, MemMemberService>();
 
+// 运营位模块 —— 服务层（首页轮播图 mkt_banner）
+builder.Services.AddScoped<IBannerService, BannerService>();
+
 // 财务结算模块 —— 服务层（应收账款 + 收款核销 + 支付回调）
 builder.Services.AddScoped<IReceivableService, ReceivableService>();
 builder.Services.AddScoped<IPaymentService, PaymentService>();

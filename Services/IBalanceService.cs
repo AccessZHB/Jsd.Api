@@ -35,6 +35,9 @@ public interface IBalanceService
     /// <summary>后台代客充值（线下收款，直接入账，无需回调）</summary>
     Task<ApiResponse<RechargeDto>> AdminRechargeAsync(AdminRechargeDto dto);
 
+    /// <summary>会员自助充值（小程序「立即充值」入口，未对接微信支付，调用即直接入账）</summary>
+    Task<ApiResponse<RechargeDto>> SelfRechargeAsync(decimal amount);
+
     /// <summary>充值退款（仅已支付可退；事务内扣回余额并写流水）</summary>
     Task<ApiResponse<bool>> RefundRechargeAsync(long id, RechargeRefundDto dto);
 
@@ -82,4 +85,12 @@ public interface IBalanceService
 
     /// <summary>退款执行成功后把金额退回会员可用余额（change_type=3）</summary>
     Task RefundBackAsync(long memMemberId, decimal amount, long refundId, string? remark = null);
+
+    /// <summary>
+    /// 订单【直接扣减可用余额】（余额支付场景：确认订单页「提交即扣款」）。
+    /// 与 DeductForOrderAsync（扣冻结额）不同：本方法直接减少 mem_member.balance，
+    /// 不依赖先验冻结，CAS 乐观锁防超扣，并写 OrderDeduct 流水。
+    /// 失败（余额不足/并发冲突）抛 InvalidOperationException，由调用方事务回滚。
+    /// </summary>
+    Task DeductDirectForOrderAsync(long memMemberId, decimal amount, long orderId, string? remark = null);
 }

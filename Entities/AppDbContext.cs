@@ -90,6 +90,9 @@ public class AppDbContext : DbContext
     /// <summary>会员 / 客户主表（mem_member，订单 buyer_id 指向本表）</summary>
     public DbSet<MemMember> MemMembers => Set<MemMember>();
 
+    /// <summary>会员收货地址表（mem_member_address，小程序确认订单页地址落库）</summary>
+    public DbSet<MemMemberAddress> MemMemberAddresses => Set<MemMemberAddress>();
+
     // ==================== 财务结算模块 ====================
 
     /// <summary>应收账款表（trx_receivable，B2B 赊账/月结）</summary>
@@ -106,6 +109,11 @@ public class AppDbContext : DbContext
 
     /// <summary>商品图片（prod_image：主图/轮播图/详情图）</summary>
     public DbSet<ProdImage> ProdImages => Set<ProdImage>();
+
+    // ==================== 运营位模块 ====================
+
+    /// <summary>首页轮播图（mkt_banner）</summary>
+    public DbSet<MktBanner> MktBanners => Set<MktBanner>();
 
     // ==================== 采购管理模块 ====================
 
@@ -434,6 +442,13 @@ public class AppDbContext : DbContext
             entity.HasIndex(e => e.Level);                 // 按等级筛选
             entity.HasIndex(e => e.Status);                // 按状态筛选
             entity.HasIndex(e => e.CreateTime);            // 按注册时间范围筛选
+        });
+
+        // ---------- mem_member_address 会员收货地址表 ----------
+        modelBuilder.Entity<MemMemberAddress>(entity =>
+        {
+            entity.HasIndex(e => e.MemberId);                 // 按会员查地址列表
+            entity.HasIndex(e => new { e.MemberId, e.IsDefault }); // 查会员默认地址
         });
 
         // ---------- 财务结算模块 ----------

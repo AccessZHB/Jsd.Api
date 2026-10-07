@@ -64,6 +64,7 @@ public class OrderService : IOrderService
     private readonly IReceivableService _receivableService;
     private readonly IPriceService _priceService;
     private readonly IBalanceService _balanceService;
+    private readonly CurrentUserService _currentUser;
 
     public OrderService(
         AppDbContext db,
@@ -72,7 +73,8 @@ public class OrderService : IOrderService
         IRepository<MemMember> memberRepository,
         IReceivableService receivableService,
         IPriceService priceService,
-        IBalanceService balanceService)
+        IBalanceService balanceService,
+        CurrentUserService currentUser)
     {
         _db = db;
         _orderRepository = orderRepository;
@@ -81,6 +83,7 @@ public class OrderService : IOrderService
         _receivableService = receivableService;
         _priceService = priceService;
         _balanceService = balanceService;
+        _currentUser = currentUser;
     }
 
     // ============================================================
@@ -132,6 +135,91 @@ public class OrderService : IOrderService
     }
 
     // ============================================================
+    // 1.5 会员「我的订单」（强制归属当前登录会员，绝不越权）
+    // ============================================================
+
+    /// <summary>
+    /// 会员「我的订单」：仅返回当前登录会员（JWT member_id → BuyerId）的订单。
+    /// 1) 会员ID 一律从 Token 解析（_currentUser.MemberId），前端不传、也不信任；
+    /// 2) EF 查询强制 .Where(o => o.BuyerId == 当前会员ID)；
+    /// 3) 管理员令牌（无 member_id 声明）不应调用本接口，MemberId 回退到 UserId 时直接拒绝。
+    /// </summary>
+    public async Task<ApiResponse<PagedResult<OrderListDto>>> GetMyOrdersAsync(
+        int? orderStatus, DateTime? startTime, DateTime? endTime, int page, int pageSize)
+    {
+        if (page < 1) page = 1;
+        if (pageSize < 1 || pageSize > 100) pageSize = 10;
+
+        // ⚠️ 会员身份必须从 Token 取，绝不信任前端；非会员令牌直接拒绝
+        var memberId = _currentUser.MemberId;
+        if (memberId <= 0 || !_currentUser.IsMember)
+        {
+            return ApiResponse<PagedResult<OrderListDto>>.Fail("无法识别当前会员身份", 401);
+        }
+
+        var query = _db.TrxOrders
+            .AsNoTracking()
+            .Where(o => o.IsDeleted == 0 && o.BuyerId == memberId);   // 强制归属过滤
+
+        // 订单状态筛选
+        if (orderStatus.HasValue)
+        {
+            query = query.Where(o => o.OrderStatus == orderStatus.Value);
+        }
+
+        // 创建时间范围（按天查询时 endTime 传当天 23:59:59）
+        if (startTime.HasValue)
+        {
+            query = query.Where(o => o.CreateTime >= startTime.Value);
+        }
+        if (endTime.HasValue)
+        {
+            var end = endTime.Value.TimeOfDay == TimeSpan.Zero
+                ? endTime.Value.AddDays(1).AddSeconds(-1)
+                : endTime.Value;
+            query = query.Where(o => o.CreateTime <= end);
+        }
+
+        var total = await query.CountAsync();
+
+        var orders = await query
+            .OrderByDescending(o => o.Id)
+            .Skip((page - 1) * pageSize)
+            .Take(pageSize)
+            .ToListAsync();
+
+        var list = orders.Select(MapToListDto).ToList();
+
+        // 一次性统计当前页每张订单的明细数（商品种类数）与商品件数合计（与 GetPagedListAsync 一致）
+        var orderIds = list.Select(o => o.Id).ToList();
+        if (orderIds.Count > 0)
+        {
+            var summaries = await _db.TrxOrderItems
+                .Where(i => orderIds.Contains(i.OrderId))
+                .GroupBy(i => i.OrderId)
+                .Select(g => new
+                {
+                    OrderId = g.Key,
+                    ItemCount = g.Count(),
+                    TotalQuantity = g.Sum(x => x.Quantity)
+                })
+                .ToDictionaryAsync(x => x.OrderId, x => x);
+
+            foreach (var dto in list)
+            {
+                if (summaries.TryGetValue(dto.Id, out var s))
+                {
+                    dto.ItemCount = s.ItemCount;
+                    dto.TotalQuantity = s.TotalQuantity;
+                }
+            }
+        }
+
+        return ApiResponse<PagedResult<OrderListDto>>.Success(
+            PagedResult<OrderListDto>.Create(list, total, page, pageSize));
+    }
+
+    // ============================================================
     // 2. 订单详情
     // ============================================================
 
@@ -142,6 +230,12 @@ public class OrderService : IOrderService
         if (order == null)
         {
             return ApiResponse<OrderDetailDto>.Fail("订单不存在", 404);
+        }
+
+        // ⚠️ 归属校验：会员令牌只能查看【自己】的订单；管理员令牌（无 member_id 声明）可查看全部
+        if (_currentUser.IsMember && order.BuyerId != _currentUser.MemberId)
+        {
+            return ApiResponse<OrderDetailDto>.Fail("无权查看该订单", 403);
         }
 
         var dto = new OrderDetailDto();
@@ -604,6 +698,282 @@ public class OrderService : IOrderService
     }
 
     // ============================================================
+    // 8. 订单预计算（确认页初始化）
+    // ============================================================
+
+    /// <summary>
+    /// 订单预计算（GET/POST /api/order/pre-calculate）：
+    /// 后端重算每行单价（命中价格策略取成交价，否则 SKU 零售价）、小计与应付金额，
+    /// 并【校验库存】（不足时逐行给出提示、整体 stockOk=false）。
+    /// 金额不信任前端：total = Σ(单价×数量)，pay = total - discount + freight。
+    /// 买家取当前登录会员（JWT），保证与提交时一致。
+    /// </summary>
+    public async Task<ApiResponse<OrderPreCalculateResultDto>> PreCalculateAsync(OrderPreCalculateDto dto)
+    {
+        var memberId = _currentUser.MemberId;
+        var quotation = await ResolveQuotationByMemberAsync(memberId, dto.Items);
+
+        // 构建快照（校验商品/SKU 存在、数量>0；失败直接 Fail，不抛异常）
+        List<TrxOrderItem> items;
+        try
+        {
+            items = await BuildSubmitItemsAsync(dto.Items, quotation);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return ApiResponse<OrderPreCalculateResultDto>.Fail(ex.Message);
+        }
+
+        // 一次性读取涉及 SKU 的当前库存
+        var skuIds = items.Select(i => i.SkuId).Distinct().ToList();
+        var stockMap = await _db.ProdSkus.AsNoTracking()
+            .Where(s => skuIds.Contains(s.Id))
+            .ToDictionaryAsync(s => s.Id, s => s.Stock);
+
+        var result = new OrderPreCalculateResultDto
+        {
+            DiscountAmount = dto.DiscountAmount < 0 ? 0 : dto.DiscountAmount,
+            FreightAmount = dto.FreightAmount < 0 ? 0 : dto.FreightAmount
+        };
+
+        var allStockOk = true;
+        foreach (var it in items)
+        {
+            var stock = stockMap.TryGetValue(it.SkuId, out var st) ? st : 0;
+            var ok = stock >= it.Quantity;
+            if (!ok)
+            {
+                allStockOk = false;
+                result.StockMessage = $"商品「{it.ProdName}」库存不足（剩余 {stock}，需 {it.Quantity}）";
+            }
+
+            result.Items.Add(new OrderPreCalculateItemDto
+            {
+                SkuId = it.SkuId,
+                ProdName = it.ProdName,
+                SkuName = it.SkuName,
+                SpecValues = it.SpecValues,
+                ProductImage = it.ProductImage,
+                UnitPrice = it.UnitPrice,
+                Quantity = it.Quantity,
+                Subtotal = it.SubtotalAmount,
+                StockOk = ok,
+                StockMessage = ok ? null : $"库存不足（剩余 {stock}）"
+            });
+        }
+
+        result.TotalAmount = items.Sum(i => i.SubtotalAmount);
+        result.PayAmount = result.TotalAmount - result.DiscountAmount + result.FreightAmount;
+        if (result.PayAmount < 0) result.PayAmount = 0;
+        result.StockOk = allStockOk;
+
+        return ApiResponse<OrderPreCalculateResultDto>.Success(result);
+    }
+
+    // ============================================================
+    // 9. 订单提交（确认页「提交订单」——单事务：库存校验 → 建单 → 余额直扣 → 置已支付）
+    // ============================================================
+
+    /// <summary>
+    /// 订单提交（POST /api/order/submit，余额支付专用）：
+    /// 在【同一个数据库事务】内完成：
+    ///   1) 解析收货信息（优先已保存地址 AddressId，否则内联 Receivers + 可选 SaveAddress）；
+    ///   2) 后端重算金额（不信任前端）；
+    ///   3) 创建订单（状态=待付款 Pending）；
+    ///   4) 【再次校验并扣减库存】（CAS，库存不足整体回滚）；
+    ///   5) 【立即余额直扣】（可用余额 → 扣减，写 OrderDeduct 流水；不足抛异常回滚）；
+    ///   6) 订单状态推进为已支付 Paid + 写 pay_time + 会员统计联动 + 价格快照；
+    ///   7) 提交事务。
+    /// 任一步失败整体回滚，绝不出现「钱扣了库存没扣 / 单建了钱没扣」的中间态。
+    /// </summary>
+    public async Task<ApiResponse<OrderSubmitResultDto>> SubmitAsync(OrderSubmitDto dto)
+    {
+        var buyerId = _currentUser.MemberId;
+        if (buyerId <= 0)
+        {
+            return ApiResponse<OrderSubmitResultDto>.Fail("未获取到登录会员信息，请重新登录", 401);
+        }
+
+        // 校验买家会员必须存在（避免孤儿订单）
+        var buyerExists = await _db.MemMembers.AsNoTracking()
+            .AnyAsync(m => m.Id == buyerId && m.IsDeleted == 0);
+        if (!buyerExists)
+        {
+            return ApiResponse<OrderSubmitResultDto>.Fail($"下单会员不存在（memberId={buyerId}）");
+        }
+
+        // ---------- 1) 解析收货信息 ----------
+        string receiverName, receiverPhone, receiverProvince, receiverCity, receiverDistrict, receiverAddress;
+        if (dto.AddressId > 0)
+        {
+            var addr = await _db.MemMemberAddresses
+                .FirstOrDefaultAsync(a => a.Id == dto.AddressId && a.MemberId == buyerId && a.IsDeleted == 0);
+            if (addr == null)
+            {
+                return ApiResponse<OrderSubmitResultDto>.Fail("收货地址不存在或不属于当前会员");
+            }
+
+            receiverName = addr.Name;
+            receiverPhone = addr.Phone;
+            receiverProvince = addr.Province;
+            receiverCity = addr.City;
+            receiverDistrict = addr.District;
+            receiverAddress = addr.Detail;
+        }
+        else
+        {
+            if (string.IsNullOrWhiteSpace(dto.ReceiverName)
+                || string.IsNullOrWhiteSpace(dto.ReceiverPhone)
+                || string.IsNullOrWhiteSpace(dto.ReceiverAddress))
+            {
+                return ApiResponse<OrderSubmitResultDto>.Fail("请填写完整的收货信息（姓名/电话/详细地址）");
+            }
+
+            receiverName = dto.ReceiverName.Trim();
+            receiverPhone = dto.ReceiverPhone.Trim();
+            receiverProvince = dto.ReceiverProvince ?? string.Empty;
+            receiverCity = dto.ReceiverCity ?? string.Empty;
+            receiverDistrict = dto.ReceiverDistrict ?? string.Empty;
+            receiverAddress = dto.ReceiverAddress.Trim();
+
+            // 立即下单且要求保存：落库为新地址（默认地址逻辑由仓储/Controller 的 save 接口保证，
+            // 这里仅简单保存，不处理默认位互斥，避免与 /api/address/save 重复）
+            if (dto.SaveAddress)
+            {
+                var newAddr = new MemMemberAddress
+                {
+                    MemberId = buyerId,
+                    Name = receiverName,
+                    Phone = receiverPhone,
+                    Province = receiverProvince,
+                    City = receiverCity,
+                    District = receiverDistrict,
+                    Detail = receiverAddress,
+                    IsDefault = 0,
+                    IsDeleted = 0
+                };
+                await _db.MemMemberAddresses.AddAsync(newAddr);
+                await _db.SaveChangesAsync();
+            }
+        }
+
+        // ---------- 2) 后端重算金额 + 构建商品快照 ----------
+        var quotation = await ResolveQuotationByMemberAsync(buyerId, dto.Items);
+
+        List<TrxOrderItem> items;
+        try
+        {
+            items = await BuildSubmitItemsAsync(dto.Items, quotation);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return ApiResponse<OrderSubmitResultDto>.Fail(ex.Message);
+        }
+
+        var totalAmount = items.Sum(i => i.SubtotalAmount);
+        var discount = dto.DiscountAmount < 0 ? 0 : dto.DiscountAmount;
+        var freight = dto.FreightAmount < 0 ? 0 : dto.FreightAmount;
+        var payAmount = totalAmount - discount + freight;
+        if (payAmount < 0) payAmount = 0;
+
+        var orderNo = await GenerateOrderNoAsync();
+        var logs = new List<LogStockLog>();
+        var stockCache = new Dictionary<long, int>();
+
+        // ---------- 3)~7) 单事务 ----------
+        await using var tx = await _db.Database.BeginTransactionAsync();
+        try
+        {
+            var order = new TrxOrder
+            {
+                OrderNo = orderNo,
+                BuyerId = buyerId,
+                ReceiverName = receiverName,
+                ReceiverPhone = receiverPhone,
+                ReceiverProvince = receiverProvince,
+                ReceiverCity = receiverCity,
+                ReceiverDistrict = receiverDistrict,
+                ReceiverAddress = receiverAddress,
+                TotalAmount = totalAmount,
+                DiscountAmount = discount,
+                FreightAmount = freight,
+                PayAmount = payAmount,
+                OrderStatus = OrderStatuses.Pending,   // 先建待支付，扣款成功后再转已支付
+                PayMethod = PayMethods.Balance,        // 会员余额支付（目前唯一支持）
+                BuyerRemark = dto.Remark ?? string.Empty,
+                MerchantRemark = string.Empty,
+                IsDeleted = 0
+            };
+
+            await _orderRepository.AddAsync(order);
+            await _orderRepository.SaveChangesAsync();   // 先落主表拿 order.Id
+
+            foreach (var it in items)
+            {
+                it.OrderId = order.Id;
+            }
+            await _itemRepository.AddRangeAsync(items);
+            await _db.SaveChangesAsync();
+
+            // 4) 再次校验并扣减库存（CAS；不足 → 抛异常 → 整体回滚）
+            foreach (var it in items)
+            {
+                await DeductStockAsync(
+                    logs, stockCache,
+                    it.ProdInfoId, it.SkuId, -it.Quantity,
+                    $"订单支付扣减-{order.OrderNo}", order.Id);
+            }
+
+            // 5) 立即余额直扣（可用余额 → 扣减；不足 → 抛异常 → 整体回滚）
+            if (payAmount > 0)
+            {
+                await _balanceService.DeductDirectForOrderAsync(
+                    buyerId, payAmount, order.Id, $"订单支付扣减-{order.OrderNo}");
+            }
+
+            // 6) 订单状态推进为已支付
+            order.OrderStatus = OrderStatuses.Paid;
+            order.PayTime = DateTime.Now;
+
+            // 会员统计联动（累计消费 + 订单数 + 最近订单）
+            await UpdateMemberOnPaidAsync(buyerId, payAmount, order.OrderNo);
+
+            // 价格快照（历史价格追溯）
+            await SavePriceSnapshotsAsync(order.Id, items, quotation);
+
+            // 库存变动日志落库
+            await _db.LogStockLogs.AddRangeAsync(logs);
+            await _db.SaveChangesAsync();
+
+            await tx.CommitAsync();
+
+            // 扣款后会员可用余额（供前端刷新展示）
+            var balanceAfter = await _db.MemMembers.AsNoTracking()
+                .Where(m => m.Id == buyerId)
+                .Select(m => m.Balance)
+                .FirstAsync();
+
+            return ApiResponse<OrderSubmitResultDto>.Success(new OrderSubmitResultDto
+            {
+                Id = order.Id,
+                OrderNo = order.OrderNo,
+                PayAmount = order.PayAmount,
+                BalanceAfter = balanceAfter
+            }, "下单并支付成功");
+        }
+        catch (InvalidOperationException ex)
+        {
+            await tx.RollbackAsync();
+            return ApiResponse<OrderSubmitResultDto>.Fail(ex.Message);
+        }
+        catch
+        {
+            await tx.RollbackAsync();
+            throw;
+        }
+    }
+
+    // ============================================================
     // 8. 修改备注（仅待付款可改）
     // ============================================================
 
@@ -726,6 +1096,111 @@ public class OrderService : IOrderService
                 UnitPrice = unitPrice,                              // 单价 = 策略成交价 / SKU 零售价
                 Quantity = input.Quantity,
                 SubtotalAmount = unitPrice * input.Quantity         // 小计 = 单价 × 数量
+            });
+        }
+
+        return items;
+    }
+
+    /// <summary>
+    /// 按会员取价（与 ResolveQuotationAsync 同逻辑，但入参为提交明细列表）。
+    /// 取价失败（会员不存在、无策略、参数异常等）返回空映射，下单回退标准售价。
+    /// </summary>
+    private async Task<Dictionary<long, QuotationResultDto>> ResolveQuotationByMemberAsync(
+        long memberId, List<OrderSubmitItemDto> inputs)
+    {
+        var map = new Dictionary<long, QuotationResultDto>();
+        if (memberId <= 0 || inputs.Count == 0)
+        {
+            return map;
+        }
+
+        try
+        {
+            var request = new QuotationRequestDto
+            {
+                MemMemberId = memberId,
+                Items = inputs
+                    .Select(i => new QuotationItemInputDto { MaterialId = i.SkuId, Quantity = i.Quantity })
+                    .ToList()
+            };
+
+            var resp = await _priceService.QuotationAsync(request);
+            if (resp.Code == 200 && resp.Data != null)
+            {
+                foreach (var r in resp.Data)
+                {
+                    map[r.MaterialId] = r;
+                }
+            }
+        }
+        catch
+        {
+            // 取价异常不阻断下单：回退标准售价
+        }
+
+        return map;
+    }
+
+    /// <summary>
+    /// 校验明细并生成商品快照（提交专用，入参只含 SKU + 数量，prod_info_id 从 SKU 反查）。
+    /// 校验项：SKU 存在、SKU 归属商品存在、数量 &gt; 0。
+    /// 快照字段一律从 prod_info / prod_sku 实时读取；spec_json（镜片规格+光度）与 processing_status 透传落库。
+    /// 不通过时抛 InvalidOperationException（中文消息），由调用方转 400/Fail。
+    /// </summary>
+    private async Task<List<TrxOrderItem>> BuildSubmitItemsAsync(
+        List<OrderSubmitItemDto> inputs, Dictionary<long, QuotationResultDto> quotation)
+    {
+        var skuIds = inputs.Select(i => i.SkuId).Distinct().ToList();
+        var skuMap = await _db.ProdSkus
+            .AsNoTracking()
+            .Where(s => skuIds.Contains(s.Id))
+            .ToDictionaryAsync(s => s.Id);
+
+        var prodIds = skuMap.Values.Select(s => s.ProdInfoId).Distinct().ToList();
+        var prodMap = await _db.ProdInfos
+            .AsNoTracking()
+            .Where(p => prodIds.Contains(p.Id))
+            .ToDictionaryAsync(p => p.Id);
+
+        var items = new List<TrxOrderItem>();
+
+        foreach (var input in inputs)
+        {
+            if (!skuMap.TryGetValue(input.SkuId, out var sku))
+            {
+                throw new InvalidOperationException($"SKU不存在（sku_id={input.SkuId}）");
+            }
+            if (!prodMap.TryGetValue(sku.ProdInfoId, out var prod))
+            {
+                throw new InvalidOperationException($"商品不存在（prod_info_id={sku.ProdInfoId}）");
+            }
+            if (input.Quantity <= 0)
+            {
+                throw new InvalidOperationException("购买数量必须大于0");
+            }
+
+            // 单价：命中价格策略取成交价，否则 SKU 零售价
+            var unitPrice = quotation.TryGetValue(input.SkuId, out var q) ? q.FinalPrice : sku.RetailPrice;
+
+            items.Add(new TrxOrderItem
+            {
+                ProdInfoId = sku.ProdInfoId,
+                SkuId = input.SkuId,
+                // ===== 下单瞬间快照 =====
+                ProdName = prod.ProdInfoName,
+                SkuName = sku.SkuName ?? string.Empty,
+                SpecValues = sku.SpecValues ?? string.Empty,
+                ProductImage = string.IsNullOrWhiteSpace(sku.Image) ? (prod.MainImage ?? string.Empty) : sku.Image,
+                UnitPrice = unitPrice,
+                Quantity = input.Quantity,
+                SubtotalAmount = unitPrice * input.Quantity,
+                // 镜片规格 + 光度 JSON 透传（确认页传入）
+                SpecJson = input.SpecJson ?? string.Empty,
+                // 加工状态：unprocessed-待加工 / processed-已加工
+                ProcessingStatus = string.Equals(input.ProcessingStatus, "unprocessed", StringComparison.OrdinalIgnoreCase)
+                    ? "unprocessed"
+                    : "processed"
             });
         }
 

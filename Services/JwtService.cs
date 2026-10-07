@@ -116,6 +116,43 @@ public class JwtService
     }
 
     /// <summary>
+    /// 生成【会员 / 小程序端】JWT Token。
+    /// 与管理员（sys_user）令牌隔离：带 user_type=member 与 member_id 自定义声明；
+    /// 会员接口据此识别身份，避免 sys_user 与 mem_member 两套账号体系混用。
+    /// 返回：(token, access有效期秒)
+    /// </summary>
+    public (string Token, int ExpiresIn) GenerateMemberToken(MemMember member)
+    {
+        var section = _configuration.GetSection("Jwt");
+        var secretKey = section["SecretKey"]!;
+        var issuer = section["Issuer"];
+        var audience = section["Audience"];
+        var expireMinutes = int.Parse(section["ExpireMinutes"] ?? "720");
+
+        var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(secretKey));
+        var credentials = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
+
+        var claims = new List<Claim>
+        {
+            new(ClaimTypes.NameIdentifier, member.Id.ToString()),  // 会员ID
+            new(ClaimTypes.Name, member.UserName),                 // 登录账号
+            new(ClaimTypes.Role, "member"),                        // 角色固定为 member
+            new("user_type", "member"),                            // 自定义声明：区分会员/管理员
+            new("member_id", member.Id.ToString())                 // 自定义声明：会员ID（会员接口读取）
+        };
+
+        var token = new JwtSecurityToken(
+            issuer: issuer,
+            audience: audience,
+            claims: claims,
+            expires: DateTime.UtcNow.AddMinutes(expireMinutes),
+            signingCredentials: credentials
+        );
+
+        return (new JwtSecurityTokenHandler().WriteToken(token), expireMinutes * 60);
+    }
+
+    /// <summary>
     /// 校验并核销 refresh token（一次性消耗，防重放）。
     /// 返回：null=无效/已使用/过期；否则为用户ID。
     /// </summary>

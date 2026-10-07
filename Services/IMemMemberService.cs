@@ -25,4 +25,18 @@ public interface IMemMemberService
 
     /// <summary>删除客户（软删除 + 未完成订单校验）</summary>
     Task<ApiResponse<object>> DeleteAsync(long id);
+
+    // ===================== 小程序端（会员自助） =====================
+
+    /// <summary>
+    /// 小程序会员登录：按登录账号查会员 → BCrypt 校验密码 → 校验启用状态 → 签发会员 JWT。
+    /// 与后台管理员登录（AuthService）完全隔离，两套账号体系不混用。
+    /// </summary>
+    Task<ApiResponse<MemberLoginResultDto>> LoginAsync(MemberLoginDto dto);
+
+    /// <summary>
+    /// 获取当前登录会员资料（「我的」页用）：会员编号、名称、等级、余额、折扣等。
+    /// memberId 来自 JWT 的 member_id 声明。
+    /// </summary>
+    Task<ApiResponse<MemberProfileDto>> GetProfileAsync(long memberId);
 }

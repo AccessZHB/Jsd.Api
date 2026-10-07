@@ -50,4 +50,21 @@ public interface IOrderService
     /// <summary>订单导出（占位实现：不生成真实文件，返回提示与命中条数）</summary>
     Task<ApiResponse<OrderExportDto>> ExportAsync(
         string? orderNo, int? orderStatus, DateTime? startTime, DateTime? endTime);
+
+    /// <summary>确认订单页预计算：重算金额 + 逐 SKU 库存校验（不改库，会员隔离）</summary>
+    Task<ApiResponse<OrderPreCalculateResultDto>> PreCalculateAsync(OrderPreCalculateDto dto);
+
+    /// <summary>
+    /// 单事务提交订单：再校验库存 → 建单(待支付) → 余额直扣 → 置已支付。
+    /// 仅支持会员余额支付；余额不足直接拒绝（不落库）。
+    /// </summary>
+    Task<ApiResponse<OrderSubmitResultDto>> SubmitAsync(OrderSubmitDto dto);
+
+    /// <summary>
+    /// 会员「我的订单」：仅查询当前登录会员（JWT member_id）名下的订单，
+    /// 在 EF 查询中强制追加 .Where(o => o.BuyerId == 当前会员ID) 过滤条件。
+    /// 严禁信任前端传入的 userId；会员身份一律从 Token 解析。
+    /// </summary>
+    Task<ApiResponse<PagedResult<OrderListDto>>> GetMyOrdersAsync(
+        int? orderStatus, DateTime? startTime, DateTime? endTime, int page, int pageSize);
 }

@@ -26,10 +26,12 @@ namespace Jsd.Api.Services;
 public class MemMemberService : IMemMemberService
 {
     private readonly IMemMemberRepository _repository;
+    private readonly JwtService _jwtService;
 
-    public MemMemberService(IMemMemberRepository repository)
+    public MemMemberService(IMemMemberRepository repository, JwtService jwtService)
     {
         _repository = repository;
+        _jwtService = jwtService;   // 单例，用于签发小程序会员令牌
     }
 
     // ============================================================
@@ -237,6 +239,83 @@ public class MemMemberService : IMemMemberService
         Status = m.Status,
         StatusName = CustomerMaps.GetStatusName(m.Status),
         CreateTime = m.CreateTime
+    };
+
+    // ============================================================
+    // 7. 小程序会员登录（与后台管理员登录隔离）
+    // ============================================================
+    public async Task<ApiResponse<MemberLoginResultDto>> LoginAsync(MemberLoginDto dto)
+    {
+        var userName = (dto.UserName ?? string.Empty).Trim();
+
+        // 1. 按登录账号查会员（不存在/已删除统一提示，避免账号枚举）
+        var member = await _repository.GetByUserNameAsync(userName);
+        if (member == null || member.IsDeleted == 1)
+        {
+            return ApiResponse<MemberLoginResultDto>.Fail("账号或密码错误", 401);
+        }
+
+        // 2. BCrypt 校验密码（库里存的是密文）
+        if (!BCrypt.Net.BCrypt.Verify(dto.Password, member.Password))
+        {
+            return ApiResponse<MemberLoginResultDto>.Fail("账号或密码错误", 401);
+        }
+
+        // 3. 状态校验：0-禁用 不允许登录
+        if (member.Status != 1)
+        {
+            return ApiResponse<MemberLoginResultDto>.Fail("账号已禁用，请联系客服", 403);
+        }
+
+        // 4. 签发会员令牌（带 user_type=member，与管理员令牌区分）
+        var (token, expiresIn) = _jwtService.GenerateMemberToken(member);
+
+        return ApiResponse<MemberLoginResultDto>.Success(new MemberLoginResultDto
+        {
+            Token = token,
+            ExpiresIn = expiresIn,
+            MemberId = member.Id,
+            MemberNo = member.MemberNo,
+            Name = member.Name,
+            Nickname = member.Name,
+            LevelName = CustomerMaps.GetLevelName(member.Level),
+            Balance = member.Balance
+        });
+    }
+
+    // ============================================================
+    // 8. 当前登录会员资料
+    // ============================================================
+    public async Task<ApiResponse<MemberProfileDto>> GetProfileAsync(long memberId)
+    {
+        if (memberId <= 0)
+        {
+            return ApiResponse<MemberProfileDto>.Fail("会员ID不合法", 400);
+        }
+
+        var member = await _repository.GetByIdTrackedAsync(memberId);
+        if (member == null || member.IsDeleted == 1)
+        {
+            return ApiResponse<MemberProfileDto>.Fail("会员不存在", 404);
+        }
+
+        return ApiResponse<MemberProfileDto>.Success(MapProfile(member));
+    }
+
+    private static MemberProfileDto MapProfile(MemMember m) => new()
+    {
+        MemberId = m.Id,
+        MemberNo = m.MemberNo,
+        Name = m.Name,
+        UserName = m.UserName,
+        Phone = m.Phone,
+        CompanyName = m.CompanyName,
+        Level = m.Level,
+        LevelName = CustomerMaps.GetLevelName(m.Level),
+        Balance = m.Balance,
+        DiscountRate = m.DiscountRate,
+        CreditLimit = m.CreditLimit,
+        Status = m.Status
     };
 
     private static CustomerDetailDto MapDetail(MemMember m) => new()
