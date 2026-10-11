@@ -3,6 +3,7 @@ using FluentValidation;
 using Jsd.Api.Entities;
 using Jsd.Api.Models.Common;
 using Jsd.Api.Models.Price;
+using Jsd.Api.Models.Wallet;
 using Jsd.Api.Repositories;
 using Jsd.Api.Validators;
 using Microsoft.EntityFrameworkCore;
@@ -623,6 +624,102 @@ public class BalanceService : IBalanceService
 
         return ApiResponse<PagedResult<BalanceLogDto>>.Success(
             PagedResult<BalanceLogDto>.Create(dtos, total, q.Page, q.PageSize));
+    }
+
+    /// <summary>
+    /// 会员钱包流水分页（小程序「充值记录 / 消费记录」）。
+    /// ⚠️ 会员身份必须从 Token 取（member_id），绝不信任前端传参，强制 mem_member_id 归属过滤。
+    /// type：recharge=充值（change_type=1）；consume=消费（余额因下单减少：下单扣减2 / 下单冻结7）。
+    /// 关联单号批量解析：related_type=1 → trx_order.order_no；related_type=2 → mem_recharge.recharge_no。
+    /// </summary>
+    public async Task<ApiResponse<PagedResult<WalletRecordItemDto>>> GetMyRecordsAsync(string type, int page, int size)
+    {
+        if (page < 1) page = 1;
+        if (size < 1 || size > 100) size = 10;
+
+        var memberId = _currentUser.MemberId;
+        if (memberId <= 0 || !_currentUser.IsMember)
+        {
+            return ApiResponse<PagedResult<WalletRecordItemDto>>.Fail("无法识别当前会员身份", 401);
+        }
+
+        type = (type ?? string.Empty).Trim().ToLowerInvariant();
+        int[] changeTypes;
+        if (type == "recharge")
+        {
+            changeTypes = new[] { (int)BalanceChangeType.Recharge };
+        }
+        else if (type == "consume")
+        {
+            changeTypes = new[] { (int)BalanceChangeType.OrderDeduct, (int)BalanceChangeType.Freeze };
+        }
+        else
+        {
+            return ApiResponse<PagedResult<WalletRecordItemDto>>.Fail("type 仅支持 recharge / consume");
+        }
+
+        var query = _db.MktBalanceLogs
+            .AsNoTracking()
+            .Where(l => l.MemMemberId == memberId && changeTypes.Contains(l.ChangeType));
+
+        var total = await query.CountAsync();
+
+        var logs = await query
+            .OrderByDescending(l => l.Id)
+            .Skip((page - 1) * size)
+            .Take(size)
+            .ToListAsync();
+
+        // 批量解析关联单号，避免 N+1 查询
+        var orderIds = logs
+            .Where(l => l.RelatedType == RelatedOrder && l.RelatedId.HasValue)
+            .Select(l => l.RelatedId!.Value).Distinct().ToList();
+        var rechargeIds = logs
+            .Where(l => l.RelatedType == RelatedRecharge && l.RelatedId.HasValue)
+            .Select(l => l.RelatedId!.Value).Distinct().ToList();
+
+        var orderNoMap = orderIds.Count == 0
+            ? new Dictionary<long, string>()
+            : await _db.TrxOrders.AsNoTracking()
+                .Where(o => orderIds.Contains(o.Id))
+                .ToDictionaryAsync(o => o.Id, o => o.OrderNo);
+        var rechargeNoMap = rechargeIds.Count == 0
+            ? new Dictionary<long, string>()
+            : await _db.MemRecharges.AsNoTracking()
+                .Where(r => rechargeIds.Contains(r.Id))
+                .ToDictionaryAsync(r => r.Id, r => r.RechargeNo);
+
+        var dtos = logs.Select(l =>
+        {
+            // change_amount 恒为正数，方向由 after/before 勾稽得出：收入为正、支出为负
+            var signed = l.AfterBalance >= l.BeforeBalance ? l.ChangeAmount : -l.ChangeAmount;
+
+            string? relatedNo = null;
+            if (l.RelatedType == RelatedOrder && l.RelatedId.HasValue)
+            {
+                orderNoMap.TryGetValue(l.RelatedId.Value, out relatedNo);
+            }
+            else if (l.RelatedType == RelatedRecharge && l.RelatedId.HasValue)
+            {
+                rechargeNoMap.TryGetValue(l.RelatedId.Value, out relatedNo);
+            }
+
+            return new WalletRecordItemDto
+            {
+                Id = l.Id,
+                ChangeType = l.ChangeType,
+                ChangeTypeName = BalanceChangeTypeHelper.GetName(l.ChangeType),
+                Amount = signed,
+                AfterBalance = l.AfterBalance,
+                RelatedType = l.RelatedType,
+                RelatedOrderNo = relatedNo,
+                Remark = l.Remark,
+                CreateTime = l.CreateTime.ToString("yyyy-MM-dd HH:mm:ss")
+            };
+        }).ToList();
+
+        return ApiResponse<PagedResult<WalletRecordItemDto>>.Success(
+            PagedResult<WalletRecordItemDto>.Create(dtos, total, page, size));
     }
 
     // ============================================================

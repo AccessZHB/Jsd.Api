@@ -67,4 +67,12 @@ public interface IOrderService
     /// </summary>
     Task<ApiResponse<PagedResult<OrderListDto>>> GetMyOrdersAsync(
         int? orderStatus, DateTime? startTime, DateTime? endTime, int page, int pageSize);
+
+    /// <summary>
+    /// 会员「我的订单」各状态数量统计（GET /api/order/status-count）：
+    /// 先按当前登录会员（JWT member_id → buyer_id）强制归属过滤，再按 order_status 分组计数。
+    /// 返回 { pendingPay, pendingShip, pendingReceive, completed, closed }，缺失状态补 0。
+    /// 会员身份一律从 Token 解析，绝不信任前端。
+    /// </summary>
+    Task<ApiResponse<OrderStatusCountDto>> GetStatusCountsAsync();
 }

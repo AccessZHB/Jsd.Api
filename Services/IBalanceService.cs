@@ -1,5 +1,6 @@
 using Jsd.Api.Models.Common;
 using Jsd.Api.Models.Price;
+using Jsd.Api.Models.Wallet;
 
 namespace Jsd.Api.Services;
 
@@ -37,6 +38,13 @@ public interface IBalanceService
 
     /// <summary>会员自助充值（小程序「立即充值」入口，未对接微信支付，调用即直接入账）</summary>
     Task<ApiResponse<RechargeDto>> SelfRechargeAsync(decimal amount);
+
+    /// <summary>
+    /// 会员钱包流水分页（小程序「充值记录 / 消费记录」）。
+    /// ⚠️ 会员身份从 Token（member_id）解析并强制按 mem_member_id 过滤；
+    /// type：recharge=充值（change_type=1），consume=消费（下单扣减2/下单冻结7）。
+    /// </summary>
+    Task<ApiResponse<PagedResult<WalletRecordItemDto>>> GetMyRecordsAsync(string type, int page, int size);
 
     /// <summary>充值退款（仅已支付可退；事务内扣回余额并写流水）</summary>
     Task<ApiResponse<bool>> RefundRechargeAsync(long id, RechargeRefundDto dto);

@@ -41,4 +41,19 @@ public class WalletController : ControllerBase
             return ApiResponse<RechargeDto>.Fail(ex.Message);
         }
     }
+
+    /// <summary>
+    /// 会员钱包流水分页（小程序「充值记录 / 消费记录」）。
+    /// type=recharge 充值；type=consume 消费（下单扣减/下单冻结）。
+    /// ⚠️ 会员身份从 Token（member_id）解析，强制按 mem_member_id 归属过滤，只能看自己的账单。
+    /// </summary>
+    [HttpGet("record/list")]
+    [ProducesResponseType(typeof(ApiResponse<PagedResult<WalletRecordItemDto>>), StatusCodes.Status200OK)]
+    public async Task<ApiResponse<PagedResult<WalletRecordItemDto>>> GetRecordList(
+        [FromQuery] string type = "recharge",
+        [FromQuery] int page = 1,
+        [FromQuery] int size = 10)
+    {
+        return await _balanceService.GetMyRecordsAsync(type, page, size);
+    }
 }

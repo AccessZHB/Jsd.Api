@@ -219,6 +219,44 @@ public class OrderService : IOrderService
             PagedResult<OrderListDto>.Create(list, total, page, pageSize));
     }
 
+    /// <summary>
+    /// 会员「我的订单」各状态数量统计：
+    /// 1) 会员身份从 Token 解析（_currentUser.MemberId），非会员令牌直接拒绝；
+    /// 2) 强制 .Where(o => o.IsDeleted == 0 &amp;&amp; o.BuyerId == 当前会员ID)（归属过滤）；
+    /// 3) 按 OrderStatus 分组计数，映射到 { pendingPay, pendingShip, pendingReceive, completed, closed }，
+    ///    不存在的状态补 0（如当前会员没有任何「待付款」订单，pendingPay 返回 0 而非 null）。
+    /// 一次分组查询替代原前端分 5 次请求 /order/my，减少 5× 网络往返。
+    /// </summary>
+    public async Task<ApiResponse<OrderStatusCountDto>> GetStatusCountsAsync()
+    {
+        // ⚠️ 会员身份必须从 Token 取，绝不信任前端；非会员令牌直接拒绝
+        var memberId = _currentUser.MemberId;
+        if (memberId <= 0 || !_currentUser.IsMember)
+        {
+            return ApiResponse<OrderStatusCountDto>.Fail("无法识别当前会员身份", 401);
+        }
+
+        // 归属过滤后，按 order_status 分组计数
+        var groups = await _db.TrxOrders
+            .AsNoTracking()
+            .Where(o => o.IsDeleted == 0 && o.BuyerId == memberId)
+            .GroupBy(o => o.OrderStatus)
+            .Select(g => new { Status = g.Key, Count = g.Count() })
+            .ToListAsync();
+
+        var map = groups.ToDictionary(g => g.Status, g => g.Count);
+        var dto = new OrderStatusCountDto
+        {
+            PendingPay = map.GetValueOrDefault(OrderStatuses.Pending),
+            PendingShip = map.GetValueOrDefault(OrderStatuses.Paid),
+            PendingReceive = map.GetValueOrDefault(OrderStatuses.Shipped),
+            Completed = map.GetValueOrDefault(OrderStatuses.Completed),
+            Closed = map.GetValueOrDefault(OrderStatuses.Closed)
+        };
+
+        return ApiResponse<OrderStatusCountDto>.Success(dto);
+    }
+
     // ============================================================
     // 2. 订单详情
     // ============================================================

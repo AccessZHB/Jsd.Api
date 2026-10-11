@@ -73,9 +73,9 @@ public class OrderController : ControllerBase
     /// 仅返回当前登录会员（JWT member_id → buyer_id）名下的订单，
     /// 在 Service 内强制 .Where(o => o.BuyerId == 当前会员ID) 过滤，绝不信任前端 userId。
     /// 管理员令牌（无 member_id 声明）调用会被拒绝（401）。
-    /// 示例：GET /api/order/my?orderStatus=1&amp;page=1&amp;pageSize=10
+    /// 示例：GET /api/order/my?status=1&amp;page=1&amp;pageSize=10
     /// </summary>
-    /// <param name="orderStatus">订单状态筛选（可空=全部）</param>
+    /// <param name="orderStatus">订单状态筛选（查询键为 status；可空=全部）</param>
     /// <param name="startTime">下单时间起（可空）</param>
     /// <param name="endTime">下单时间止（可空）</param>
     /// <param name="page">页码，默认1</param>
@@ -83,13 +83,29 @@ public class OrderController : ControllerBase
     [HttpGet("my")]
     [ProducesResponseType(typeof(ApiResponse<PagedResult<OrderListDto>>), StatusCodes.Status200OK)]
     public async Task<ApiResponse<PagedResult<OrderListDto>>> GetMyOrders(
-        [FromQuery] int? orderStatus,
+        // ⚠️ 前端（小程序）按约定使用查询键 status（status=0 待付款…4 已关闭；不传=全部）。
+        // 后端用 Name 别名绑定，否则 [FromQuery] 默认按参数名 orderStatus 取，会拿不到 status → 过滤失效。
+        [FromQuery(Name = "status")] int? orderStatus,
         [FromQuery] DateTime? startTime,
         [FromQuery] DateTime? endTime,
         [FromQuery] int page = 1,
         [FromQuery] int pageSize = 10)
     {
         return await _orderService.GetMyOrdersAsync(orderStatus, startTime, endTime, page, pageSize);
+    }
+
+    /// <summary>
+    /// 会员「我的订单」各状态数量统计（权限：会员令牌）。
+    /// 仅统计当前登录会员（JWT member_id → buyer_id）名下的订单，按 order_status 分组计数。
+    /// 返回 { pendingPay, pendingShip, pendingReceive, completed, closed }，缺失状态补 0。
+    /// 前端「会员中心」5 个角标直接消费本接口，避免分 5 次请求 /order/my。
+    /// 示例：GET /api/order/status-count
+    /// </summary>
+    [HttpGet("status-count")]
+    [ProducesResponseType(typeof(ApiResponse<OrderStatusCountDto>), StatusCodes.Status200OK)]
+    public async Task<ApiResponse<OrderStatusCountDto>> GetStatusCount()
+    {
+        return await _orderService.GetStatusCountsAsync();
     }
 
     // ============================================================
