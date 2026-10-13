@@ -17,5 +17,9 @@ public class AfterSaleMappingProfile : Profile
 
         CreateMap<TrxReturn, ReturnListDto>();
         CreateMap<TrxReturn, ReturnDetailDto>();
+        // ⚠️ 嵌套集合元素映射：TrxReturn.Items(List<TrxReturnItem>) → ReturnDetailDto.Items(List<ReturnDetailItemDto>)。
+        // 缺少此条时，Map<ReturnDetailDto> 会在映射 Items 属性时抛
+        // AutoMapperMappingException: Missing type map configuration or unsupported mapping。
+        CreateMap<TrxReturnItem, ReturnDetailItemDto>();
     }
 }
