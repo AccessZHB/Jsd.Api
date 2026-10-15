@@ -39,8 +39,17 @@ public class MemberLoginResultDto
     /// <summary>昵称（默认取 Name，小程序可直接展示）</summary>
     public string Nickname { get; set; } = string.Empty;
 
-    /// <summary>等级中文名（如：普通会员 / VIP会员 / 核心会员）</summary>
+    /// <summary>等级中文名（如：金牌客户 / VIP客户；未分级为"未分级"）</summary>
     public string LevelName { get; set; } = string.Empty;
+
+    /// <summary>客户等级ID（关联 mem_member_level.id，null=未分级；小程序可据此请求会员价）</summary>
+    public long? CustomerLevelId { get; set; }
+
+    /// <summary>
+    /// 折扣率（0.00~1.00，由等级的 default_discount 动态带出）。
+    /// 小程序仅用于展示（如"会员价"标签），**实际成交价一律以后端取价结果为准**，前端不参与计算。
+    /// </summary>
+    public decimal DiscountRate { get; set; } = 1.00m;
 
     /// <summary>可用余额（元）</summary>
     public decimal Balance { get; set; }
@@ -58,17 +67,20 @@ public class MemberProfileDto
     public string? Phone { get; set; }
     public string? CompanyName { get; set; }
 
-    /// <summary>等级：0-普通会员 1-VIP会员 2-核心会员</summary>
-    public int Level { get; set; }
+    /// <summary>
+    /// 客户等级ID（关联 mem_member_level.id；null/0 = 未分级）。
+    /// ⚠️ 旧的 Level(0/1/2 枚举) 已随 mem_member.level 列一并废弃删除。
+    /// </summary>
+    public long? CustomerLevelId { get; set; }
 
-    /// <summary>等级中文名</summary>
+    /// <summary>等级中文名（由【客户等级】表动态带出；未分级为"未分级"）</summary>
     public string LevelName { get; set; } = string.Empty;
 
     /// <summary>可用余额（元）</summary>
     public decimal Balance { get; set; }
 
-    /// <summary>折扣率（0.00~1.00）</summary>
-    public decimal DiscountRate { get; set; }
+    /// <summary>折扣率（0.00~1.00，由等级的 default_discount 动态带出，客户表不再落库存储）</summary>
+    public decimal DiscountRate { get; set; } = 1.00m;
 
     /// <summary>信用额度（元）</summary>
     public decimal CreditLimit { get; set; }

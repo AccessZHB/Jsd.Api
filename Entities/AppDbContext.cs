@@ -439,7 +439,7 @@ public class AppDbContext : DbContext
         {
             entity.HasIndex(e => e.MemberNo).IsUnique();   // 会员编号唯一
             entity.HasIndex(e => e.UserName).IsUnique();   // 登录账号唯一
-            entity.HasIndex(e => e.Level);                 // 按等级筛选
+            entity.HasIndex(e => e.CustomerLevelId);       // 按客户等级筛选（等级=折扣来源；旧 level 枚举列已废弃）
             entity.HasIndex(e => e.Status);                // 按状态筛选
             entity.HasIndex(e => e.CreateTime);            // 按注册时间范围筛选
         });

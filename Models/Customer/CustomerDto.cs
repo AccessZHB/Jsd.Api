@@ -3,19 +3,6 @@ using System.ComponentModel.DataAnnotations;
 namespace Jsd.Api.Models.Customer;
 
 /// <summary>
-/// 会员等级（对应 mem_member.level）
-/// </summary>
-public enum CustomerLevel
-{
-    /// <summary>0-普通会员</summary>
-    Normal = 0,
-    /// <summary>1-VIP会员</summary>
-    Vip = 1,
-    /// <summary>2-核心会员</summary>
-    Core = 2
-}
-
-/// <summary>
 /// 会员状态（对应 mem_member.status）
 /// </summary>
 public enum CustomerStatus
@@ -43,14 +30,6 @@ public static class CustomerPermissions
 /// </summary>
 public static class CustomerMaps
 {
-    /// <summary>等级 → 中文名</summary>
-    public static string GetLevelName(int level) => level switch
-    {
-        (int)CustomerLevel.Vip => "VIP会员",
-        (int)CustomerLevel.Core => "核心会员",
-        _ => "普通会员"
-    };
-
     /// <summary>状态 → 中文名</summary>
     public static string GetStatusName(int status) => status == (int)CustomerStatus.Enabled ? "启用" : "禁用";
 
@@ -74,8 +53,8 @@ public class CustomerPageQuery
     /// <summary>客户名称 / 公司名称 / 会员编号 关键词（模糊，可空）</summary>
     public string? Keyword { get; set; }
 
-    /// <summary>会员等级筛选：0-普通 1-VIP 2-核心（可空=全部）</summary>
-    public int? Level { get; set; }
+    /// <summary>客户等级筛选（mem_member_level.id，可空=全部）</summary>
+    public long? CustomerLevelId { get; set; }
 
     /// <summary>状态筛选：1-启用 0-禁用（可空=全部）</summary>
     public int? Status { get; set; }
@@ -111,12 +90,21 @@ public class CustomerSaveDto
     [StringLength(200, ErrorMessage = "公司名称最长 200 个字符")]
     public string? CompanyName { get; set; }
 
-    /// <summary>会员等级：0-普通 1-VIP 2-核心（默认 0）</summary>
-    public int Level { get; set; } = 0;
+    /// <summary>
+    /// 客户等级ID（关联 mem_member_level.id）——【折扣的唯一来源】。
+    /// 新增/编辑客户时只需传本字段，后端据此在【客户等级】表中取 default_discount 作为该客户折扣率。
+    /// ⚠️ 已彻底移除旧的 Level(0/1/2 枚举) 与独立 DiscountRate 入参：
+    ///    折扣率不再由客户表单手工录入，统一由所选等级决定（改等级折扣即刻对所有该等级客户生效）。
+    ///    传 0 或 null 表示未分级（按标准售价，不享受等级折扣）。
+    /// </summary>
+    public long? CustomerLevelId { get; set; }
 
-    /// <summary>折扣率（0.00~1.00，默认 1.00 不打折）</summary>
-    [Range(0.00, 1.00, ErrorMessage = "折扣率必须在 0~1 之间")]
-    public decimal DiscountRate { get; set; } = 1.00m;
+    /// <summary>
+    /// 等级默认折扣率（0.00~1.00，1.00 表示不打折）——【只读展示字段】。
+    /// 由后端根据 CustomerLevelId 关联 mem_member_level.default_discount 动态带出，
+    /// 前端仅用于"选完等级后提示折扣信息"，**不参与落库**（客户表不再存折扣率）。
+    /// </summary>
+    public decimal? DiscountRate { get; set; }
 
     /// <summary>信用额度（≥0，单位：元）</summary>
     [Range(0, double.MaxValue, ErrorMessage = "信用额度不能为负")]
@@ -180,14 +168,16 @@ public class CustomerListItemDto
     /// <summary>公司名称</summary>
     public string? CompanyName { get; set; }
 
-    /// <summary>会员等级数值</summary>
-    public int Level { get; set; }
+    /// <summary>客户等级ID（关联 mem_member_level.id；null/0 = 未分级）</summary>
+    public long? CustomerLevelId { get; set; }
 
-    /// <summary>会员等级中文名（后端回填）</summary>
+    /// <summary>客户等级中文名（后端按【客户等级】表动态回填；未分级显示"未分级"）</summary>
     public string LevelName { get; set; } = string.Empty;
 
-    /// <summary>折扣率</summary>
-    public decimal DiscountRate { get; set; }
+    /// <summary>
+    /// 折扣率（【只读展示】由等级的 default_discount 动态带出，客户表不再落库存储；未分级为 1.00）
+    /// </summary>
+    public decimal DiscountRate { get; set; } = 1.00m;
 
     /// <summary>信用额度</summary>
     public decimal CreditLimit { get; set; }

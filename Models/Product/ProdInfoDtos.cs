@@ -72,6 +72,29 @@ public class ProdInfoDto
     /// <summary>库存总量（所有启用 SKU 的 stock 之和）</summary>
     public int TotalStock { get; set; }
 
+    // ===================== 会员等级价（客户折扣体系重构） =====================
+    // 折扣来源：mem_member.customer_level_id → mem_member_level.default_discount
+    //          / price_rule(客户等级价) 的 calc_value；取价时动态计算，客户表不落库折扣率。
+
+    /// <summary>原价（标准售价 = SKU 最低零售价，未打折）</summary>
+    public decimal? OriginalPrice { get; set; }
+
+    /// <summary>
+    /// 当前会员折后价（原价 × 会员折扣，未登录/未分级/无折扣时 = 原价）。
+    /// ⚠️ 与下单取价引擎（PriceService.QuotationAsync）同源，保证"看到的价格 = 成交价"。
+    /// </summary>
+    public decimal? SalePrice { get; set; }
+
+    /// <summary>会员折扣率（0~1，1.00 表示不打折；null 表示当前请求无会员身份）</summary>
+    public decimal? MemberDiscount { get; set; }
+
+    /// <summary>会员等级名称（如"金牌客户"；未登录或未分级为 null）</summary>
+    public string? MemberLevelName { get; set; }
+
+    /// <summary>是否享受会员价（折后价 &lt; 原价时前端才展示删除线与"会员价"标签）</summary>
+    public bool HasMemberPrice =>
+        SalePrice.HasValue && OriginalPrice.HasValue && SalePrice.Value < OriginalPrice.Value;
+
     /// <summary>创建时间</summary>
     public DateTime CreateTime { get; set; }
 }

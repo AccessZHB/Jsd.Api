@@ -39,15 +39,14 @@ public class MemMember
     public string? CompanyName { get; set; }
 
     /// <summary>
-    /// 会员等级：0-普通会员 1-VIP会员 2-核心会员
-    /// 名称映射见 Models/Customer/CustomerDto 的 GetLevelName()。
+    /// 客户等级ID（关联 mem_member_level.id）——【客户折扣的唯一来源】。
+    /// ⚠️ 重构后已彻底删除本表冗余的 level(旧枚举) 与 discount_rate(独立折扣率) 两列：
+    ///    客户折扣率一律由本字段关联【客户等级】表的 default_discount 决定，
+    ///    并在取价时动态计算（不落库），保证"改等级折扣 → 所有该等级客户立即生效"。
+    ///    为 0/NULL 表示未分级，只能走客户专属价或标准售价。
     /// </summary>
-    [Column("level")]
-    public int Level { get; set; } = 0;
-
-    /// <summary>折扣率（0.00~1.00，1.00 表示不打折；下单时按此折扣计算）</summary>
-    [Column("discount_rate")]
-    public decimal DiscountRate { get; set; } = 1.00m;
+    [Column("customer_level_id")]
+    public long? CustomerLevelId { get; set; }
 
     /// <summary>信用额度（允许赊账上限，单位：元；0 表示不支持赊账）</summary>
     [Column("credit_limit")]
@@ -58,13 +57,6 @@ public class MemMember
     public int AccountPeriod { get; set; } = 0;
 
     // ===================== 价格策略与会员余额模块（扩展） =====================
-
-    /// <summary>
-    /// 客户等级ID（关联 mem_member_level.id，价格策略与会员余额模块扩展）。
-    /// 取值引擎据此匹配「客户等级价」规则；为 0/NULL 表示未分级，只能走客户专属价或标准售价。
-    /// </summary>
-    [Column("customer_level_id")]
-    public long? CustomerLevelId { get; set; }
 
     /// <summary>
     /// 可用余额（元，decimal(10,2)）。

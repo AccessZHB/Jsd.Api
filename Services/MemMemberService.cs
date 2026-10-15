@@ -3,6 +3,7 @@ using Jsd.Api.Entities;
 using Jsd.Api.Models.Common;
 using Jsd.Api.Models.Customer;
 using Jsd.Api.Repositories;
+using Microsoft.EntityFrameworkCore;
 
 namespace Jsd.Api.Services;
 
@@ -27,11 +28,13 @@ public class MemMemberService : IMemMemberService
 {
     private readonly IMemMemberRepository _repository;
     private readonly JwtService _jwtService;
+    private readonly AppDbContext _db;
 
-    public MemMemberService(IMemMemberRepository repository, JwtService jwtService)
+    public MemMemberService(IMemMemberRepository repository, JwtService jwtService, AppDbContext db)
     {
         _repository = repository;
         _jwtService = jwtService;   // 单例，用于签发小程序会员令牌
+        _db = db;                   // 用于关联查询【客户等级】表（mem_member_level）动态取等级名与默认折扣
     }
 
     // ============================================================
@@ -44,9 +47,11 @@ public class MemMemberService : IMemMemberService
         if (query.PageSize < 1 || query.PageSize > 100) query.PageSize = 10;
 
         var (items, total) = await _repository.GetPagedListAsync(
-            query.Keyword, query.Level, query.Status, query.StartTime, query.EndTime, query.Page, query.PageSize);
+            query.Keyword, query.CustomerLevelId, query.Status, query.StartTime, query.EndTime, query.Page, query.PageSize);
 
-        var list = items.Select(MapListItem).ToList();
+        // 批量加载等级字典，动态回填 等级名称 + 默认折扣率（避免 N+1）
+        var levelMap = await LoadLevelMapAsync(items.Select(m => m.CustomerLevelId));
+        var list = items.Select(m => MapListItem(m, levelMap)).ToList();
 
         return ApiResponse<PagedResult<CustomerListItemDto>>.Success(
             PagedResult<CustomerListItemDto>.Create(list, total, query.Page, query.PageSize));
@@ -63,7 +68,10 @@ public class MemMemberService : IMemMemberService
             return ApiResponse<CustomerDetailDto>.Fail("客户不存在", 404);
         }
 
-        return ApiResponse<CustomerDetailDto>.Success(MapDetail(member));
+        // 加载等级字典，动态回填 等级名称 + 默认折扣率
+        var levelMap = await LoadLevelMapAsync(new[] { member.CustomerLevelId });
+
+        return ApiResponse<CustomerDetailDto>.Success(MapDetail(member, levelMap));
     }
 
     // ============================================================
@@ -120,14 +128,27 @@ public class MemMemberService : IMemMemberService
         // 4. BCrypt 加密密码（work factor 默认 12）
         var passwordHash = BCrypt.Net.BCrypt.HashPassword(dto.Password.Trim());
 
-        // 5. 组装实体并保存（统计字段初始为 0，由订单联动回写）
+        // 5. 客户等级校验（折扣的唯一来源）：传入时必须存在且处于启用状态
+        if (dto.CustomerLevelId.HasValue && dto.CustomerLevelId.Value > 0)
+        {
+            var levelExists = await _db.MemMemberLevels.AsNoTracking()
+                .AnyAsync(l => l.Id == dto.CustomerLevelId.Value && l.Status == 1);
+            if (!levelExists)
+            {
+                return ApiResponse<object>.Fail("所选客户等级不存在或已停用，请重新选择");
+            }
+        }
+
+        // 6. 组装实体并保存（统计字段初始为 0，由订单联动回写）
         var member = new MemMember
         {
             MemberNo = memberNo,
             Name = dto.Name.Trim(),
             CompanyName = dto.CompanyName?.Trim(),
-            Level = dto.Level,
-            DiscountRate = dto.DiscountRate,
+            // ⚠️ 折扣率不再落库：只持久化等级ID，折扣由等级的 default_discount 在取价时动态计算
+            CustomerLevelId = dto.CustomerLevelId.HasValue && dto.CustomerLevelId.Value > 0
+                ? dto.CustomerLevelId
+                : null,
             CreditLimit = dto.CreditLimit,
             AccountPeriod = dto.AccountPeriod,
             UserName = dto.UserName.Trim(),
@@ -165,11 +186,24 @@ public class MemMemberService : IMemMemberService
             return ApiResponse<object>.Fail("登录账号已存在，请更换");
         }
 
-        // 3. 增量更新基础字段
+        // 3. 客户等级校验（折扣的唯一来源）：传入时必须存在且处于启用状态
+        if (dto.CustomerLevelId.HasValue && dto.CustomerLevelId.Value > 0)
+        {
+            var levelExists = await _db.MemMemberLevels.AsNoTracking()
+                .AnyAsync(l => l.Id == dto.CustomerLevelId.Value && l.Status == 1);
+            if (!levelExists)
+            {
+                return ApiResponse<object>.Fail("所选客户等级不存在或已停用，请重新选择");
+            }
+        }
+
+        // 4. 增量更新基础字段
         member.Name = dto.Name.Trim();
         member.CompanyName = dto.CompanyName?.Trim();
-        member.Level = dto.Level;
-        member.DiscountRate = dto.DiscountRate;
+        // ⚠️ 折扣率不再落库：只更新等级ID，折扣由等级的 default_discount 在取价时动态计算
+        member.CustomerLevelId = dto.CustomerLevelId.HasValue && dto.CustomerLevelId.Value > 0
+            ? dto.CustomerLevelId
+            : null;
         member.CreditLimit = dto.CreditLimit;
         member.AccountPeriod = dto.AccountPeriod;
         member.UserName = dto.UserName.Trim();
@@ -218,16 +252,42 @@ public class MemMemberService : IMemMemberService
     // ============================================================
     // 映射辅助方法（统一回填等级/状态中文名）
     // ============================================================
-    private static CustomerListItemDto MapListItem(MemMember m) => new()
+    /// <summary>
+    /// 批量加载【客户等级】字典，避免逐条查库（N+1）。
+    /// 供列表/详情在输出 DTO 时动态回填 等级名称 与 默认折扣率。
+    /// </summary>
+    private async Task<Dictionary<long, MemMemberLevel>> LoadLevelMapAsync(IEnumerable<long?> levelIds)
     {
-        Id = m.Id,
-        MemberNo = m.MemberNo,
-        Name = m.Name,
-        CompanyName = m.CompanyName,
-        Level = m.Level,
-        LevelName = CustomerMaps.GetLevelName(m.Level),
-        DiscountRate = m.DiscountRate,
-        CreditLimit = m.CreditLimit,
+        var ids = levelIds.Where(x => x.HasValue && x.Value > 0)
+                          .Select(x => x!.Value)
+                          .Distinct()
+                          .ToList();
+        if (ids.Count == 0) return new Dictionary<long, MemMemberLevel>();
+
+        return await _db.MemMemberLevels.AsNoTracking()
+            .Where(l => ids.Contains(l.Id))
+            .ToDictionaryAsync(l => l.Id);
+    }
+
+    private CustomerListItemDto MapListItem(MemMember m, Dictionary<long, MemMemberLevel>? levelMap = null)
+    {
+        MemMemberLevel? level = null;
+        if (m.CustomerLevelId.HasValue && levelMap != null)
+        {
+            levelMap.TryGetValue(m.CustomerLevelId.Value, out level);
+        }
+
+        return new CustomerListItemDto
+        {
+            Id = m.Id,
+            MemberNo = m.MemberNo,
+            Name = m.Name,
+            CompanyName = m.CompanyName,
+            // 等级与折扣统一由【客户等级】表动态带出（客户表不再落库折扣率）
+            CustomerLevelId = m.CustomerLevelId,
+            LevelName = level?.LevelName ?? "未分级",
+            DiscountRate = level?.DefaultDiscount ?? 1.00m,
+            CreditLimit = m.CreditLimit,
         AccountPeriod = m.AccountPeriod,
         TotalConsumption = m.TotalConsumption,
         OrderCount = m.OrderCount,
@@ -236,10 +296,11 @@ public class MemMemberService : IMemMemberService
         LastOrderTime = m.LastOrderTime,
         UserName = m.UserName,
         Phone = m.Phone,
-        Status = m.Status,
-        StatusName = CustomerMaps.GetStatusName(m.Status),
-        CreateTime = m.CreateTime
-    };
+            Status = m.Status,
+            StatusName = CustomerMaps.GetStatusName(m.Status),
+            CreateTime = m.CreateTime
+        };
+    }
 
     // ============================================================
     // 7. 小程序会员登录（与后台管理员登录隔离）
@@ -267,7 +328,21 @@ public class MemMemberService : IMemMemberService
             return ApiResponse<MemberLoginResultDto>.Fail("账号已禁用，请联系客服", 403);
         }
 
-        // 4. 签发会员令牌（带 user_type=member，与管理员令牌区分）
+        // 5. 等级名称 + 折扣率：由【客户等级】表动态带出（客户表不再存等级枚举与折扣率）
+        var levelName = "未分级";
+        decimal discountRate = 1.00m;
+        if (member.CustomerLevelId.HasValue)
+        {
+            var lv = await _db.MemMemberLevels.AsNoTracking()
+                .FirstOrDefaultAsync(l => l.Id == member.CustomerLevelId.Value);
+            if (lv != null)
+            {
+                levelName = lv.LevelName;
+                discountRate = lv.DefaultDiscount;
+            }
+        }
+
+        // 6. 签发会员令牌（带 user_type=member，与管理员令牌区分）
         var (token, expiresIn) = _jwtService.GenerateMemberToken(member);
 
         return ApiResponse<MemberLoginResultDto>.Success(new MemberLoginResultDto
@@ -278,7 +353,9 @@ public class MemMemberService : IMemMemberService
             MemberNo = member.MemberNo,
             Name = member.Name,
             Nickname = member.Name,
-            LevelName = CustomerMaps.GetLevelName(member.Level),
+            LevelName = levelName,
+            CustomerLevelId = member.CustomerLevelId,
+            DiscountRate = discountRate,
             Balance = member.Balance
         });
     }
@@ -299,35 +376,57 @@ public class MemMemberService : IMemMemberService
             return ApiResponse<MemberProfileDto>.Fail("会员不存在", 404);
         }
 
-        return ApiResponse<MemberProfileDto>.Success(MapProfile(member));
+        // 加载等级字典，动态回填 等级名称 + 默认折扣率
+        var levelMap = await LoadLevelMapAsync(new[] { member.CustomerLevelId });
+
+        return ApiResponse<MemberProfileDto>.Success(MapProfile(member, levelMap));
     }
 
-    private static MemberProfileDto MapProfile(MemMember m) => new()
+    private MemberProfileDto MapProfile(MemMember m, Dictionary<long, MemMemberLevel>? levelMap = null)
     {
-        MemberId = m.Id,
-        MemberNo = m.MemberNo,
-        Name = m.Name,
-        UserName = m.UserName,
-        Phone = m.Phone,
-        CompanyName = m.CompanyName,
-        Level = m.Level,
-        LevelName = CustomerMaps.GetLevelName(m.Level),
-        Balance = m.Balance,
-        DiscountRate = m.DiscountRate,
-        CreditLimit = m.CreditLimit,
-        Status = m.Status
-    };
+        MemMemberLevel? level = null;
+        if (m.CustomerLevelId.HasValue && levelMap != null)
+        {
+            levelMap.TryGetValue(m.CustomerLevelId.Value, out level);
+        }
 
-    private static CustomerDetailDto MapDetail(MemMember m) => new()
+        return new MemberProfileDto
+        {
+            MemberId = m.Id,
+            MemberNo = m.MemberNo,
+            Name = m.Name,
+            UserName = m.UserName,
+            Phone = m.Phone,
+            CompanyName = m.CompanyName,
+            // 等级与折扣统一由【客户等级】表动态带出（客户表不再落库折扣率）
+            CustomerLevelId = m.CustomerLevelId,
+            LevelName = level?.LevelName ?? "未分级",
+            DiscountRate = level?.DefaultDiscount ?? 1.00m,
+            Balance = m.Balance,
+            CreditLimit = m.CreditLimit,
+            Status = m.Status
+        };
+    }
+
+    private CustomerDetailDto MapDetail(MemMember m, Dictionary<long, MemMemberLevel>? levelMap = null)
     {
-        Id = m.Id,
-        MemberNo = m.MemberNo,
-        Name = m.Name,
-        CompanyName = m.CompanyName,
-        Level = m.Level,
-        LevelName = CustomerMaps.GetLevelName(m.Level),
-        DiscountRate = m.DiscountRate,
-        CreditLimit = m.CreditLimit,
+        MemMemberLevel? level = null;
+        if (m.CustomerLevelId.HasValue && levelMap != null)
+        {
+            levelMap.TryGetValue(m.CustomerLevelId.Value, out level);
+        }
+
+        return new CustomerDetailDto
+        {
+            Id = m.Id,
+            MemberNo = m.MemberNo,
+            Name = m.Name,
+            CompanyName = m.CompanyName,
+            // 等级与折扣统一由【客户等级】表动态带出（客户表不再落库折扣率）
+            CustomerLevelId = m.CustomerLevelId,
+            LevelName = level?.LevelName ?? "未分级",
+            DiscountRate = level?.DefaultDiscount ?? 1.00m,
+            CreditLimit = m.CreditLimit,
         AccountPeriod = m.AccountPeriod,
         TotalConsumption = m.TotalConsumption,
         OrderCount = m.OrderCount,
@@ -342,7 +441,8 @@ public class MemMemberService : IMemMemberService
         Email = m.Email,
         ContactPerson = m.ContactPerson,
         Address = m.Address,
-        Remark = m.Remark,
-        UpdateTime = m.UpdateTime
-    };
+            Remark = m.Remark,
+            UpdateTime = m.UpdateTime
+        };
+    }
 }

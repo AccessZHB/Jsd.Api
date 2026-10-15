@@ -9,9 +9,9 @@ namespace Jsd.Api.Repositories;
 /// </summary>
 public interface IMemMemberRepository : IRepository<MemMember>
 {
-    /// <summary>分页查询客户列表（关键词/等级/状态/注册时间范围 筛选，自动过滤逻辑删除）</summary>
+    /// <summary>分页查询客户列表（关键词/客户等级/状态/注册时间范围 筛选，自动过滤逻辑删除）</summary>
     Task<(List<MemMember> Items, int Total)> GetPagedListAsync(
-        string? keyword, int? level, int? status, DateTime? startTime, DateTime? endTime, int page, int pageSize);
+        string? keyword, long? customerLevelId, int? status, DateTime? startTime, DateTime? endTime, int page, int pageSize);
 
     /// <summary>根据主键查询（带跟踪 + 过滤逻辑删除，供编辑/更新使用）</summary>
     Task<MemMember?> GetByIdTrackedAsync(long id);

@@ -87,6 +87,13 @@ public class ProdSkuDto
     /// <summary>销售价/划线价（原 OriginalPrice）</summary>
     public decimal? SalePrice { get; set; }
 
+    /// <summary>
+    /// 会员折后价 = RetailPrice × 会员等级折扣（客户折扣体系重构新增）。
+    /// 未登录 / 未分级 / 无命中策略时为 null（前端按 RetailPrice 展示）。
+    /// ⚠️ 与下单取价引擎同源，保证"看到的会员价 = 实际成交价"。
+    /// </summary>
+    public decimal? MemberPrice { get; set; }
+
     /// <summary>库存量</summary>
     public int Stock { get; set; }
 

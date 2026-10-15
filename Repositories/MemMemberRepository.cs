@@ -18,7 +18,7 @@ public class MemMemberRepository : Repository<MemMember>, IMemMemberRepository
     /// 统一过滤 is_deleted = 0。
     /// </summary>
     public async Task<(List<MemMember> Items, int Total)> GetPagedListAsync(
-        string? keyword, int? level, int? status, DateTime? startTime, DateTime? endTime, int page, int pageSize)
+        string? keyword, long? customerLevelId, int? status, DateTime? startTime, DateTime? endTime, int page, int pageSize)
     {
         var query = Db.MemMembers.AsNoTracking().Where(m => m.IsDeleted == 0).AsQueryable();
 
@@ -31,10 +31,10 @@ public class MemMemberRepository : Repository<MemMember>, IMemMemberRepository
                                   || m.MemberNo.Contains(kw));
         }
 
-        // 等级筛选
-        if (level.HasValue)
+        // 客户等级筛选（关联 mem_member_level.id；旧 level 枚举列已废弃删除）
+        if (customerLevelId.HasValue && customerLevelId.Value > 0)
         {
-            query = query.Where(m => m.Level == level.Value);
+            query = query.Where(m => m.CustomerLevelId == customerLevelId.Value);
         }
 
         // 状态筛选

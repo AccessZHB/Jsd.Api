@@ -1,6 +1,7 @@
 using AutoMapper;
 using Jsd.Api.Entities;
 using Jsd.Api.Models.Common;
+using Jsd.Api.Models.Price;
 using Jsd.Api.Models.Product;
 using Microsoft.EntityFrameworkCore;
 
@@ -31,11 +32,19 @@ public class ProdInfoService : IProdInfoService
 
     private readonly AppDbContext _db;
     private readonly IMapper _mapper;
+    private readonly CurrentUserService _currentUser;
+    private readonly IPriceService _priceService;
 
-    public ProdInfoService(AppDbContext db, IMapper mapper)
+    public ProdInfoService(
+        AppDbContext db,
+        IMapper mapper,
+        CurrentUserService currentUser,
+        IPriceService priceService)
     {
         _db = db;
         _mapper = mapper;
+        _currentUser = currentUser;
+        _priceService = priceService;
     }
 
     // ============================================================
@@ -114,8 +123,91 @@ public class ProdInfoService : IProdInfoService
             }
         }
 
+        // 会员等级价：按当前登录会员的等级动态计算折后价（原价 + 会员价 + 折扣率 + 等级名）
+        await ApplyMemberPriceAsync(list);
+
         return ApiResponse<PagedResult<ProdInfoDto>>.Success(
             PagedResult<ProdInfoDto>.Create(list, total, page, pageSize));
+    }
+
+    /// <summary>
+    /// 回填【会员等级价】：原价 OriginalPrice / 折后价 SalePrice / 折扣率 MemberDiscount / 等级名 MemberLevelName。
+    ///
+    /// 折扣来源（统一出口，客户表不再落库折扣率）：
+    ///   mem_member.customer_level_id → 命中 price_rule（客户等级价，按 priority 降序）
+    ///   → 未命中回退 mem_member_level.default_discount → 再回退标准售价。
+    ///
+    /// 仅对【会员令牌】请求生效（JWT 含 member_id）；后台管理员或未登录访问时保持原价。
+    /// ⚠️ 取价复用 PriceService.QuotationAsync（与下单同源），保证"列表看到的价格 = 实际成交价"，
+    ///    且订单价格快照 order_price_snapshots 记录的 final_price 与此一致。
+    /// </summary>
+    private async Task ApplyMemberPriceAsync(List<ProdInfoDto> list)
+    {
+        if (list.Count == 0) return;
+
+        // 非会员请求（管理员后台 / 未登录）：不计算会员价，前端按原价展示
+        var memberId = _currentUser.MemberId;
+        if (!_currentUser.IsMember || memberId <= 0) return;
+
+        var prodIds = list.Select(p => p.Id).Distinct().ToList();
+
+        // 每个商品取"最低价 SKU"作为代表（与列表 MinPrice 口径一致）；内存分组避免复杂 SQL 翻译
+        var allSkus = await _db.ProdSkus.AsNoTracking()
+            .Where(s => prodIds.Contains(s.ProdInfoId) && s.Status == 1)
+            .Select(s => new { s.Id, s.ProdInfoId, s.RetailPrice })
+            .ToListAsync();
+
+        var repSkus = allSkus
+            .GroupBy(s => s.ProdInfoId)
+            .Select(g => g.OrderBy(s => s.RetailPrice).First())
+            .ToList();
+
+        if (repSkus.Count == 0) return;
+
+        try
+        {
+            var resp = await _priceService.QuotationAsync(new QuotationRequestDto
+            {
+                MemMemberId = memberId,
+                Items = repSkus
+                    .Select(s => new QuotationItemInputDto { MaterialId = s.Id, Quantity = 1 })
+                    .ToList()
+            });
+
+            if (resp.Code != 200 || resp.Data == null || resp.Data.Count == 0) return;
+
+            var qMap = resp.Data.ToDictionary(r => r.MaterialId);
+
+            // 等级名称（一次查询，供前端"会员价"标签展示）
+            string? levelName = null;
+            var member = await _db.MemMembers.AsNoTracking()
+                .FirstOrDefaultAsync(m => m.Id == memberId && m.IsDeleted == 0);
+            if (member?.CustomerLevelId != null)
+            {
+                levelName = await _db.MemMemberLevels.AsNoTracking()
+                    .Where(l => l.Id == member.CustomerLevelId.Value)
+                    .Select(l => l.LevelName)
+                    .FirstOrDefaultAsync();
+            }
+
+            foreach (var dto in list)
+            {
+                var rep = repSkus.FirstOrDefault(s => s.ProdInfoId == dto.Id);
+                if (rep == null) continue;
+                if (!qMap.TryGetValue(rep.Id, out var q)) continue;
+
+                dto.OriginalPrice = q.StandardPrice;
+                dto.SalePrice = q.FinalPrice;
+                dto.MemberDiscount = q.StandardPrice > 0
+                    ? decimal.Round(q.FinalPrice / q.StandardPrice, 4)
+                    : 1m;
+                dto.MemberLevelName = levelName;
+            }
+        }
+        catch
+        {
+            // 取价异常不阻断商品浏览（价格策略是增值能力，不是展示前置条件）：回退标准售价
+        }
     }
 
     /// <summary>
@@ -217,6 +309,9 @@ public class ProdInfoService : IProdInfoService
             dto.MaxPrice = dto.Skus.Max(s => s.RetailPrice);
             dto.TotalStock = dto.Skus.Sum(s => s.Stock);
         }
+
+        // 会员等级价：详情页同样按会员等级给出折后价（与列表、下单取价同源）
+        await ApplyMemberPriceAsync(new List<ProdInfoDto> { dto });
 
         return ApiResponse<ProdInfoDetailDto>.Success(dto);
     }
