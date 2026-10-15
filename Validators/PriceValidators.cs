@@ -122,8 +122,10 @@ public class PriceRuleItemInputValidator : AbstractValidator<PriceRuleItemInputD
         RuleFor(x => x.MaterialId)
             .GreaterThan(0).WithMessage("商品物料ID不合法");
 
+        // 阶梯序号允许留空：传 0/负数时由后端按行序自动编号（1、2、3…），
+        // 避免前端清空输入框后整批规则保存被 400 拦截。
         RuleFor(x => x.TierNo)
-            .GreaterThan(0).WithMessage("阶梯序号必须大于 0");
+            .GreaterThanOrEqualTo(0).WithMessage("阶梯序号不能为负数（留空将由系统按行序自动编号）");
 
         RuleFor(x => x.MinQuantity)
             .GreaterThanOrEqualTo(0).WithMessage("最小数量不能为负数");

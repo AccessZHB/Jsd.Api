@@ -576,14 +576,20 @@ public class PriceService : IPriceService
                     _ruleItemRepo.Remove(old);
                 }
 
+                // 阶梯序号：未填写（0/负数）时按行序自动编号（1、2、3…），
+                // 保证同一规则内序号递增连续；已填写的以用户值为准。
+                var tierIndex = 0;
                 foreach (var it in input.Items)
                 {
+                    tierIndex++;
+                    var tierNo = it.TierNo > 0 ? it.TierNo : tierIndex;
+
                     await _ruleItemRepo.AddAsync(new PriceRuleItem
                     {
                         RuleId = rule.Id,
                         MaterialId = it.MaterialId,
                         ProdInfoId = prodIdMap.TryGetValue(it.MaterialId, out var pid) ? pid : 0,
-                        TierNo = it.TierNo <= 0 ? 1 : it.TierNo,
+                        TierNo = tierNo,
                         MinQuantity = it.MinQuantity,
                         MaxQuantity = it.MaxQuantity,
                         Price = it.Price.HasValue ? decimal.Round(it.Price.Value, 2) : null,
