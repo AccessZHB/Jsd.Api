@@ -173,6 +173,15 @@ public class OrderSubmitDto
     [StringLength(500)]
     public string? Remark { get; set; }
 
+    /// <summary>
+    /// 支付方式（默认 4-余额支付，保持旧请求兼容）：
+    ///   4-余额支付   → 下单即时扣余额，订单直接置「已支付」，扣减库存；
+    ///   2-银行转账   → 生成「待付款」订单，不扣余额、不扣库存，等后台录入收款后核销；
+    ///   3-货到付款   → 同上（待付款）。
+    /// 待付款订单在核销结清其应收时，由 OrderService.MarkPaidFromWriteOffAsync 扣库存并转「已支付」。
+    /// </summary>
+    public int PayMethod { get; set; } = PayMethods.Balance;
+
     /// <summary>订单明细（至少一条）</summary>
     [Required(ErrorMessage = "订单明细不能为空")]
     [MinLength(1, ErrorMessage = "订单明细至少需要一条")]
@@ -188,4 +197,10 @@ public class OrderSubmitResultDto
 
     /// <summary>扣款后会员可用余额</summary>
     public decimal BalanceAfter { get; set; }
+
+    /// <summary>
+    /// 下单后的订单状态：1-已支付（余额支付即时扣款）/ 0-待付款（银行转账、货到付款）。
+    /// 前端据此展示不同提示与结果页。
+    /// </summary>
+    public int OrderStatus { get; set; }
 }

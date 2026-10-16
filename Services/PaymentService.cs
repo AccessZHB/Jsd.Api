@@ -30,6 +30,7 @@ public class PaymentService : IPaymentService
     private readonly IRepository<TrxOrder> _orderRepository;
     private readonly IRepository<MemMember> _memberRepository;
     private readonly IMapper _mapper;
+    private readonly IOrderService _orderService;
     private readonly PaymentCreateValidator _createValidator;
     private readonly WriteOffInputValidator _writeOffValidator;
 
@@ -40,6 +41,7 @@ public class PaymentService : IPaymentService
         IRepository<TrxOrder> orderRepository,
         IRepository<MemMember> memberRepository,
         IMapper mapper,
+        IOrderService orderService,
         PaymentCreateValidator createValidator,
         WriteOffInputValidator writeOffValidator)
     {
@@ -49,6 +51,7 @@ public class PaymentService : IPaymentService
         _orderRepository = orderRepository;
         _memberRepository = memberRepository;
         _mapper = mapper;
+        _orderService = orderService;   // 核销结清应收后推进订单状态（待付款 → 已支付）
         _createValidator = createValidator;
         _writeOffValidator = writeOffValidator;
     }
@@ -94,6 +97,22 @@ public class PaymentService : IPaymentService
             OffsetAmount = i.Item.OffsetAmount,
             CreateTime = i.Item.CreateTime
         }).ToList();
+
+        // 补齐「本次核销后该应收单的剩余未收」与结算展示态（一次联查，避免 N+1）
+        var receivableIds = dto.Items.Select(i => i.ReceivableId).Distinct().ToList();
+        if (receivableIds.Count > 0)
+        {
+            var recvMap = await _db.TrxReceivables.AsNoTracking()
+                .Where(r => receivableIds.Contains(r.Id))
+                .ToDictionaryAsync(r => r.Id);
+
+            foreach (var it in dto.Items)
+            {
+                if (!recvMap.TryGetValue(it.ReceivableId, out var r)) continue;
+                it.UnpaidAfter = r.UnpaidAmount;
+                it.SettleNameAfter = ReceivableStatus.GetSettleName(r.PaidAmount, r.UnpaidAmount, r.Status);
+            }
+        }
 
         return dto;
     }
@@ -173,16 +192,30 @@ public class PaymentService : IPaymentService
                 throw new InvalidOperationException("该收款单已核销，不可重复核销");
             }
 
-            // 3) 核销总金额必须恰好等于收款金额（不允许多销或少销）
+            // 3) 【部分核销】本次核销合计 + 此前已核销合计 不得超过收款金额（允许小于，剩余下次继续核）。
+            //    原规则要求"恰好等于收款金额"，会导致收款金额 > 应收合计时永远无法核销（业务死锁）。
             var totalOffset = decimal.Round(dto.Items.Sum(i => i.Amount), 2);
-            if (totalOffset != payment.Amount)
+            if (totalOffset <= 0)
+            {
+                throw new InvalidOperationException("核销金额必须大于 0");
+            }
+
+            var existingOffset = decimal.Round(await _db.MktPaymentItems
+                .AsNoTracking()
+                .Where(i => i.PaymentId == payment.Id)
+                .SumAsync(i => (decimal?)i.OffsetAmount) ?? 0m, 2);
+            var remainingAmount = decimal.Round(payment.Amount - existingOffset, 2);
+
+            if (totalOffset > remainingAmount)
             {
                 throw new InvalidOperationException(
-                    $"核销总金额({totalOffset})必须等于收款金额({payment.Amount})");
+                    $"本次核销合计({totalOffset})超过剩余可核销金额({remainingAmount})（收款单 {payment.Amount}，已核销 {existingOffset}）");
             }
 
             // 4)~7) 逐条处理应收单
             var paymentItems = new List<MktPaymentItem>();
+            // 本次核销后被结清的应收所对应的订单（收尾时把这些订单推进为「已支付」）
+            var settledOrderIds = new List<long>();
 
             foreach (var item in dto.Items)
             {
@@ -231,6 +264,12 @@ public class PaymentService : IPaymentService
                 {
                     receivable.UnpaidAmount = 0;
                     receivable.Status = ReceivableStatus.Settled;   // 已结清
+
+                    // 【订单联动】该应收来自订单 → 核销结清后要把订单从「待付款」推进为「已支付」
+                    if (receivable.OrderId > 0)
+                    {
+                        settledOrderIds.Add(receivable.OrderId);
+                    }
                 }
                 // 否则保持未结清(0)，前端按 paid>0 && unpaid>0 展示为"部分结清"
 
@@ -240,12 +279,26 @@ public class PaymentService : IPaymentService
             // 5) 批量插入核销明细
             await _paymentRepository.AddItemsAsync(paymentItems);
 
-            // 8) 更新收款单状态 → 已核销
-            payment.Status = PaymentStatus.WrittenOff;
+            // 8) 更新收款单状态：
+            //    全部核销完（已核销合计 + 本次 ≥ 收款金额）→ 已核销；
+            //    部分核销 → 保持「待核销」，剩余金额可下次继续核销。
+            var afterOffset = decimal.Round(existingOffset + totalOffset, 2);
+            if (afterOffset >= payment.Amount)
+            {
+                payment.Status = PaymentStatus.WrittenOff;
+            }
             _paymentRepository.Update(payment);
 
             // 一次性提交：mkt_payment_item + trx_receivable + mkt_payment
             await _paymentRepository.SaveChangesAsync();
+
+            // 9) 【订单联动】应收被本次核销结清的订单 → 推进为「已支付」（扣库存 + 更新客户统计）。
+            //    刻意放在同一事务内：订单推进失败则整笔核销回滚，避免"应收已销、订单仍待付款"的不一致。
+            foreach (var orderId in settledOrderIds.Distinct())
+            {
+                await _orderService.MarkPaidFromWriteOffAsync(orderId);
+            }
+
             await transaction.CommitAsync();
         }
         catch

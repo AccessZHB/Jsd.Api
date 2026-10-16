@@ -2,6 +2,7 @@ using AutoMapper;
 using Jsd.Api.Entities;
 using Jsd.Api.Models.Common;
 using Jsd.Api.Models.Finance;
+using Jsd.Api.Models.Order;
 using Jsd.Api.Repositories;
 
 namespace Jsd.Api.Services;
@@ -113,8 +114,11 @@ public class ReceivableService : IReceivableService
             throw new InvalidOperationException($"订单 {orderId} 不存在，无法生成应收账款");
         }
 
-        // 1) 仅信用订单产生应收
-        if (order.IsCredit != 1) return 0;
+        // 1) 已关闭订单不产生应收（客户不再欠款）。
+        //    ⚠️ 重构：原实现为 `if (order.IsCredit != 1) return 0;`（仅信用订单产生应收），
+        //    导致普通「待付款」订单永远没有应收单 → 收款记录核销时提示"没有未结清的应收单"。
+        //    现改为：订单未关闭即产生应收；在线/余额支付成功时由 SettleByOrderAsync 自动结清。
+        if (order.OrderStatus == OrderStatuses.Closed) return 0;
 
         // 2) 幂等保护：同一订单只生成一条
         var exist = await _receivableRepository.GetByOrderIdAsync(orderId);
@@ -144,5 +148,32 @@ public class ReceivableService : IReceivableService
         await _receivableRepository.SaveChangesAsync();
 
         return receivable.Id;
+    }
+
+    /// <summary>
+    /// 订单【支付成功】时结清其应收账款（paid_amount = total_amount, unpaid_amount = 0, status = 已结清）。
+    ///
+    /// 【为什么需要】订单创建即生成应收（待收）；若客户走在线/余额支付，
+    /// 这笔钱不是通过"收款单核销"进来的，必须在此把应收直接结清，
+    /// 否则会残留一条永远收不回的应收（脏数据）。
+    ///
+    /// 【幂等】无应收单（如订单创建时未生成）或已结清时直接返回 0，不报错。
+    /// 【事务】内部不开事务，由调用方（订单支付事务）统一提交。
+    /// </summary>
+    public async Task<long> SettleByOrderAsync(long orderId)
+    {
+        var existing = await _receivableRepository.GetByOrderIdAsync(orderId);
+        if (existing == null || existing.UnpaidAmount <= 0) return existing?.Id ?? 0;
+
+        var tracked = await _receivableRepository.GetByIdTrackedAsync(existing.Id);
+        if (tracked == null) return 0;
+
+        tracked.PaidAmount = tracked.TotalAmount;
+        tracked.UnpaidAmount = 0;
+        tracked.Status = ReceivableStatus.Settled;   // 已结清
+        _receivableRepository.Update(tracked);
+        await _receivableRepository.SaveChangesAsync();
+
+        return tracked.Id;
     }
 }

@@ -75,4 +75,15 @@ public interface IOrderService
     /// 会员身份一律从 Token 解析，绝不信任前端。
     /// </summary>
     Task<ApiResponse<OrderStatusCountDto>> GetStatusCountsAsync();
+
+    /// <summary>
+    /// 【收款核销联动】订单的应收账款被核销结清后，把订单从「待付款」推进为「已支付」。
+    ///
+    /// 与 PayAsync 的差异：线下收款不经过会员余额，因此不扣冻结余额；
+    /// 其余（扣减库存、更新客户累计消费/订单数、写库存日志）与支付保持一致。
+    ///
+    /// 【事务】内部不自开事务，由调用方（PaymentService.WriteOffAsync 的核销事务）统一提交。
+    /// 【幂等】订单不存在、已删除或非「待付款」状态时直接跳过。
+    /// </summary>
+    Task MarkPaidFromWriteOffAsync(long orderId);
 }

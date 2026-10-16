@@ -162,6 +162,15 @@ public class PaymentItemDto
     /// <summary>核销金额</summary>
     public decimal OffsetAmount { get; set; }
 
+    /// <summary>
+    /// 本次核销【之后】，该应收单的剩余未收金额（联查 trx_receivable.unpaid_amount 当前值）。
+    /// 为 0 表示该应收单已被结清。用于前端展示"抵扣后的剩余状态"。
+    /// </summary>
+    public decimal UnpaidAfter { get; set; }
+
+    /// <summary>剩余未收对应的结算展示态（已结清 / 部分结清 / 已逾期 / 未结清）</summary>
+    public string SettleNameAfter { get; set; } = string.Empty;
+
     /// <summary>核销时间</summary>
     public DateTime CreateTime { get; set; }
 }

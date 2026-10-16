@@ -20,11 +20,20 @@ public interface IReceivableService
     Task<ReceivableDetailDto?> GetDetailAsync(long id);
 
     /// <summary>
-    /// 【关键】从订单同步生成应收账款。
-    /// 触发时机：订单【发货】且 trx_order.is_credit = 1（信用订单）。
+    /// 【关键】从订单同步生成应收账款（订单创建后即调用）。
+    /// 触发时机：订单创建（待付款）时；订单【发货】时兜底补齐。
     /// 幂等：同一订单只会生成一条应收记录，重复调用返回已有记录ID。
     /// </summary>
     /// <param name="orderId">订单ID</param>
-    /// <returns>应收记录ID；非信用订单返回 0</returns>
+    /// <returns>应收记录ID；订单已关闭时返回 0</returns>
     Task<long> SyncFromOrderAsync(long orderId);
+
+    /// <summary>
+    /// 订单【支付成功】时结清其应收账款（paid=total、unpaid=0、状态=已结清）。
+    /// 用于在线/余额支付：这笔钱不经收款单核销，必须直接结清应收，避免残留脏应收。
+    /// 幂等：无应收单或已结清时安全返回。
+    /// </summary>
+    /// <param name="orderId">订单ID</param>
+    /// <returns>应收记录ID；无应收单返回 0</returns>
+    Task<long> SettleByOrderAsync(long orderId);
 }

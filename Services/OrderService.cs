@@ -389,6 +389,10 @@ public class OrderService : IOrderService
             // 8) 【价格快照】冻结下单瞬间的成交价与命中策略
             await SavePriceSnapshotsAsync(order.Id, items, quotation);
 
+            // 9) 【财务结算联动】创建订单即生成应收账款（未结清），
+            //    让「收款记录 → 执行核销」能挂靠到该订单；在线/余额支付时由 PayAsync 自动结清。
+            await _receivableService.SyncFromOrderAsync(order.Id);
+
             await _db.SaveChangesAsync();
             await tx.CommitAsync();
 
@@ -543,13 +547,20 @@ public class OrderService : IOrderService
             order.PayMethod = dto.PayMethod;
             order.PayTime = DateTime.Now;
 
+            // 【财务结算联动】在线/余额支付成功 → 结清该订单的应收账款。
+            // 订单创建时已生成应收，而这笔钱不经「收款单核销」进来，必须在此直接结清，
+            // 否则会残留一条永远收不回的应收（脏数据）。
+            await _receivableService.SettleByOrderAsync(order.Id);
+
             // 【联动客户统计】订单支付即视为"有效订单"：累计消费 + 订单数 + 最近订单回写。
             // buyer_id 即 mem_member.id；客户不存在（如历史脏数据）时跳过，不影响主流程。
             await UpdateMemberOnPaidAsync(order.BuyerId, order.PayAmount, order.OrderNo);
 
-            // 【先充值后下单 · 第 4 步】支付成功 → 把下单时冻结的金额真正划走（frozen_balance -=）
-            // 冻结不足（如重复支付、数据异常）时抛业务异常，整个支付事务回滚。
-            if (order.PayAmount > 0)
+            // 【先充值后下单 · 第 4 步】支付成功 → 把下单时冻结的金额真正划走（frozen_balance -=）。
+            // ⚠️ 仅对「余额支付(4)」订单执行：银行转账/货到付款等线下待付款订单在下单时
+            //    并未冻结余额（见 SubmitAsync 待付款分支），若强行走冻结划扣会因"冻结不足"抛异常，
+            //    导致后台对线下订单点「支付」时失败。
+            if (order.PayAmount > 0 && order.PayMethod == PayMethods.Balance)
             {
                 await _balanceService.DeductForOrderAsync(
                     order.BuyerId, order.PayAmount, order.Id, $"订单支付扣减-{order.OrderNo}");
@@ -569,6 +580,60 @@ public class OrderService : IOrderService
             await tx.RollbackAsync();
             throw;
         }
+    }
+
+    // ============================================================
+    // 4.5 收款核销联动：应收结清 → 订单置为已支付
+    // ============================================================
+
+    /// <summary>
+    /// 【收款核销联动】某订单的应收账款被核销至未收 = 0 后，把订单从「待付款」推进为「已支付」。
+    ///
+    /// 与 PayAsync 的差异：线下收款（现金/转账）不经过会员余额，
+    /// 因此这里**不扣冻结余额**；其余动作（扣减库存、更新客户累计消费/订单数、写库存日志）与支付一致。
+    ///
+    /// 【事务】刻意不自开事务：由 PaymentService.WriteOffAsync 的核销事务统一提交，
+    ///         保证"核销明细 + 应收回写 + 收款单状态 + 订单状态 + 库存"整体原子。
+    /// 【幂等】订单不存在 / 已删除 / 非「待付款」时直接返回，不重复扣库存。
+    /// </summary>
+    public async Task MarkPaidFromWriteOffAsync(long orderId)
+    {
+        var order = await _orderRepository.GetByIdAsync(orderId);
+        if (order == null || order.IsDeleted == 1) return;
+        if (order.OrderStatus != OrderStatuses.Pending) return;   // 仅待付款需要推进
+
+        var items = await _itemRepository.GetByOrderIdAsync(orderId);
+        if (items.Count == 0) return;
+
+        var logs = new List<LogStockLog>();
+        var stockCache = new Dictionary<long, int>();
+
+        // 与订单支付一致：逐条扣减库存（delta 为负）
+        foreach (var item in items)
+        {
+            await DeductStockAsync(
+                logs, stockCache,
+                item.ProdInfoId, item.SkuId, -item.Quantity,
+                $"收款核销结清-{order.OrderNo}", orderId);
+        }
+
+        // 状态推进：待付款 → 已支付（待发货）
+        order.OrderStatus = OrderStatuses.Paid;
+        order.PayTime = DateTime.Now;
+        // 线下收款默认记为「银行转账」（原为 0-未支付时）
+        if (order.PayMethod == PayMethods.Unpaid)
+        {
+            order.PayMethod = PayMethods.BankTransfer;
+        }
+
+        // 客户统计联动（累计消费 + 订单数 + 最近订单）
+        await UpdateMemberOnPaidAsync(order.BuyerId, order.PayAmount, order.OrderNo);
+
+        if (logs.Count > 0)
+        {
+            await _db.LogStockLogs.AddRangeAsync(logs);
+        }
+        await _db.SaveChangesAsync();
     }
 
     // ============================================================
@@ -936,8 +1001,8 @@ public class OrderService : IOrderService
                 DiscountAmount = discount,
                 FreightAmount = freight,
                 PayAmount = payAmount,
-                OrderStatus = OrderStatuses.Pending,   // 先建待支付，扣款成功后再转已支付
-                PayMethod = PayMethods.Balance,        // 会员余额支付（目前唯一支持）
+                OrderStatus = OrderStatuses.Pending,   // 先建待支付：余额支付扣款成功后转已支付；线下付款则保持待付款
+                PayMethod = dto.PayMethod,             // 由前端选择：余额支付(4) / 银行转账(2) / 货到付款(3)
                 BuyerRemark = dto.Remark ?? string.Empty,
                 MerchantRemark = string.Empty,
                 IsDeleted = 0
@@ -953,33 +1018,56 @@ public class OrderService : IOrderService
             await _itemRepository.AddRangeAsync(items);
             await _db.SaveChangesAsync();
 
-            // 4) 再次校验并扣减库存（CAS；不足 → 抛异常 → 整体回滚）
-            foreach (var it in items)
-            {
-                await DeductStockAsync(
-                    logs, stockCache,
-                    it.ProdInfoId, it.SkuId, -it.Quantity,
-                    $"订单支付扣减-{order.OrderNo}", order.Id);
-            }
+            // ============================================================
+            // 【支付方式分支】
+            //   余额支付(4)      → 下单即付：扣库存 + 扣余额 + 置已支付；
+            //   银行转账(2)/货到付款(3) → 生成【待付款】订单：不扣库存、不扣余额，
+            //                        等后台录入收款单 → 执行核销 → 应收结清时
+            //                        由 MarkPaidFromWriteOffAsync 扣库存并转「已支付」。
+            // ============================================================
+            var isInstantPay = dto.PayMethod == PayMethods.Balance;
 
-            // 5) 立即余额直扣（可用余额 → 扣减；不足 → 抛异常 → 整体回滚）
-            if (payAmount > 0)
-            {
-                await _balanceService.DeductDirectForOrderAsync(
-                    buyerId, payAmount, order.Id, $"订单支付扣减-{order.OrderNo}");
-            }
-
-            // 6) 订单状态推进为已支付
-            order.OrderStatus = OrderStatuses.Paid;
-            order.PayTime = DateTime.Now;
-
-            // 会员统计联动（累计消费 + 订单数 + 最近订单）
-            await UpdateMemberOnPaidAsync(buyerId, payAmount, order.OrderNo);
-
-            // 价格快照（历史价格追溯）
+            // 价格快照（历史价格追溯）：两种方式都要留档
             await SavePriceSnapshotsAsync(order.Id, items, quotation);
 
-            // 库存变动日志落库
+            if (isInstantPay)
+            {
+                // 4) 再次校验并扣减库存（CAS；不足 → 抛异常 → 整体回滚）
+                foreach (var it in items)
+                {
+                    await DeductStockAsync(
+                        logs, stockCache,
+                        it.ProdInfoId, it.SkuId, -it.Quantity,
+                        $"订单支付扣减-{order.OrderNo}", order.Id);
+                }
+
+                // 5) 立即余额直扣（可用余额 → 扣减；不足 → 抛异常 → 整体回滚）
+                if (payAmount > 0)
+                {
+                    await _balanceService.DeductDirectForOrderAsync(
+                        buyerId, payAmount, order.Id, $"订单支付扣减-{order.OrderNo}");
+                }
+
+                // 6) 订单状态推进为已支付
+                order.OrderStatus = OrderStatuses.Paid;
+                order.PayTime = DateTime.Now;
+
+                // 会员统计联动（累计消费 + 订单数 + 最近订单）
+                await UpdateMemberOnPaidAsync(buyerId, payAmount, order.OrderNo);
+            }
+            // else：待付款订单 —— 不动库存、不动余额、客户统计等核销后由
+            //       MarkPaidFromWriteOffAsync 统一计入（与"支付"时点保持一致）。
+
+            // 【财务结算联动】两种方式都要生成应收台账：
+            await _receivableService.SyncFromOrderAsync(order.Id);
+            if (isInstantPay)
+            {
+                // 即时支付：这笔钱不经「收款单核销」进来，必须立即结清，避免残留永远收不回的应收。
+                await _receivableService.SettleByOrderAsync(order.Id);
+            }
+            // 待付款：应收保持「未结清」，供「收款记录 → 执行核销」挂靠。
+
+            // 库存变动日志落库（待付款分支 logs 为空，AddRange 空集合无副作用）
             await _db.LogStockLogs.AddRangeAsync(logs);
             await _db.SaveChangesAsync();
 
@@ -996,8 +1084,9 @@ public class OrderService : IOrderService
                 Id = order.Id,
                 OrderNo = order.OrderNo,
                 PayAmount = order.PayAmount,
-                BalanceAfter = balanceAfter
-            }, "下单并支付成功");
+                BalanceAfter = balanceAfter,
+                OrderStatus = order.OrderStatus
+            }, isInstantPay ? "下单并支付成功" : "下单成功，订单待付款");
         }
         catch (InvalidOperationException ex)
         {
