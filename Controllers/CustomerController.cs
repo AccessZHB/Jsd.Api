@@ -96,7 +96,7 @@ public class CustomerController : ControllerBase
     /// </summary>
     [HttpPost("{id}/reset-password")]
     [Authorize]
-    public async Task<ApiResponse<object>> ResetPassword(long id, [FromBody] ResetPasswordDto dto)
+    public async Task<ApiResponse<object>> ResetPassword(long id, [FromBody] CustomerResetPasswordDto dto)
     {
         // 安全限制：拒绝小程序会员令牌（管理员令牌不带 user_type 声明）
         if (User.HasClaim("user_type", "member"))
