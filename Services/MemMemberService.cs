@@ -116,10 +116,14 @@ public class MemMemberService : IMemMemberService
             return ApiResponse<object>.Fail("登录账号已存在，请更换");
         }
 
-        // 2. 密码必填（新增必须有登录密码）
+        // 2. 密码必填 + 长度下限（新增必须有登录密码，且不能少于 6 位）
         if (string.IsNullOrWhiteSpace(dto.Password))
         {
             return ApiResponse<object>.Fail("登录密码不能为空（新增客户必须设置密码）");
+        }
+        if (dto.Password.Trim().Length < 6)
+        {
+            return ApiResponse<object>.Fail("登录密码长度不能少于 6 位");
         }
 
         // 3. 自动生成会员编号
@@ -217,6 +221,10 @@ public class MemMemberService : IMemMemberService
         // 4. 密码可选：仅在传入非空时重新加密（留空 = 不修改原密码）
         if (!string.IsNullOrWhiteSpace(dto.Password))
         {
+            if (dto.Password.Trim().Length < 6)
+            {
+                return ApiResponse<object>.Fail("登录密码长度不能少于 6 位");
+            }
             member.Password = BCrypt.Net.BCrypt.HashPassword(dto.Password.Trim());
         }
 
@@ -247,6 +255,32 @@ public class MemMemberService : IMemMemberService
         await _repository.SaveChangesAsync();
 
         return ApiResponse<object>.Success(new { id }, "删除成功");
+    }
+
+    // ============================================================
+    // 6.1 后台重置客户登录密码（BCrypt 加密覆盖，绝不落明文）
+    // ============================================================
+    public async Task<ApiResponse<object>> ResetPasswordAsync(long id, string newPassword)
+    {
+        // 1. 客户必须存在且未被删除
+        var member = await _repository.GetByIdTrackedAsync(id);
+        if (member == null || member.IsDeleted == 1)
+        {
+            return ApiResponse<object>.Fail("客户不存在", 404);
+        }
+
+        // 2. 新密码长度下限校验（与新增/编辑保持一致）
+        if (string.IsNullOrWhiteSpace(newPassword) || newPassword.Trim().Length < 6)
+        {
+            return ApiResponse<object>.Fail("新密码长度不能少于 6 位");
+        }
+
+        // 3. BCrypt(cost=12) 加密覆盖原密码（绝不持久化明文）
+        member.Password = BCrypt.Net.BCrypt.HashPassword(newPassword.Trim(), workFactor: 12);
+
+        await _repository.SaveChangesAsync();
+
+        return ApiResponse<object>.Success(new { id }, "密码重置成功，请通知客户使用新密码登录");
     }
 
     // ============================================================

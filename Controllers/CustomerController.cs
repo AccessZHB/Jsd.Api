@@ -87,4 +87,23 @@ public class CustomerController : ControllerBase
     {
         return await _memberService.DeleteAsync(id);
     }
+
+    /// <summary>
+    /// 后台重置客户（会员）登录密码。
+    /// 仅后台管理员可调用：本接口在 [Authorize] 基础上额外拒绝【小程序会员令牌】
+    /// （会员令牌携带 user_type=member 声明，与管理员令牌物理隔离）。
+    /// 请求体：{ "newPassword":"newPass123" }
+    /// </summary>
+    [HttpPost("{id}/reset-password")]
+    [Authorize]
+    public async Task<ApiResponse<object>> ResetPassword(long id, [FromBody] ResetPasswordDto dto)
+    {
+        // 安全限制：拒绝小程序会员令牌（管理员令牌不带 user_type 声明）
+        if (User.HasClaim("user_type", "member"))
+        {
+            return ApiResponse<object>.Fail("无权访问：仅后台管理员可重置客户密码", 403);
+        }
+
+        return await _memberService.ResetPasswordAsync(id, dto.NewPassword);
+    }
 }

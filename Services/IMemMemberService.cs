@@ -26,6 +26,9 @@ public interface IMemMemberService
     /// <summary>删除客户（软删除 + 未完成订单校验）</summary>
     Task<ApiResponse<object>> DeleteAsync(long id);
 
+    /// <summary>后台重置客户登录密码（BCrypt 加密覆盖，绝不落明文）</summary>
+    Task<ApiResponse<object>> ResetPasswordAsync(long id, string newPassword);
+
     // ===================== 小程序端（会员自助） =====================
 
     /// <summary>
