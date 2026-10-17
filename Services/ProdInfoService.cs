@@ -313,6 +313,20 @@ public class ProdInfoService : IProdInfoService
         // 会员等级价：详情页同样按会员等级给出折后价（与列表、下单取价同源）
         await ApplyMemberPriceAsync(new List<ProdInfoDto> { dto });
 
+        // 将 SPU 的会员折扣率同步到每个启用 SKU，保证详情页/购物车/立即购买弹窗
+        // 的 SKU 展示价也是折后价；若后续价格策略需要按 SKU 单独计价，可改为
+        // 对每个 SKU 单独调用 QuotationAsync（当前按客户等级统一折扣）。
+        if (dto.MemberDiscount.HasValue && dto.MemberDiscount.Value > 0 && dto.MemberDiscount.Value < 1)
+        {
+            foreach (var sku in dto.Skus)
+            {
+                if (sku.Status == 1)
+                {
+                    sku.MemberPrice = decimal.Round(sku.RetailPrice * dto.MemberDiscount.Value, 2);
+                }
+            }
+        }
+
         return ApiResponse<ProdInfoDetailDto>.Success(dto);
     }
 
