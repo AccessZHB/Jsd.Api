@@ -115,6 +115,9 @@ public class AppDbContext : DbContext
     /// <summary>首页轮播图（mkt_banner）</summary>
     public DbSet<MktBanner> MktBanners => Set<MktBanner>();
 
+    /// <summary>内容管理 - 公告表（cms_announcement）</summary>
+    public DbSet<CmsAnnouncement> CmsAnnouncements => Set<CmsAnnouncement>();
+
     // ==================== 采购管理模块 ====================
 
     /// <summary>采购订单主表（pur_order）</summary>
@@ -831,6 +834,19 @@ public class AppDbContext : DbContext
             entity.HasIndex(e => e.Status);                // idx_status（待开票/已开票/已作废）
             entity.HasIndex(e => e.InvoiceDate);           // idx_invoice_date（按开票期间统计）
             entity.HasIndex(e => e.CreateTime);            // idx_create_time（按申请时间）
+        });
+
+        // ============================================================
+        // 内容管理模块（cms_announcement）
+        // 索引与需求文档字段定义保持一致
+        // ============================================================
+
+        // ---------- cms_announcement 公告表 ----------
+        modelBuilder.Entity<CmsAnnouncement>(entity =>
+        {
+            entity.HasIndex(e => e.Status);                 // 按发布状态筛选（latest 只取 status=1）
+            entity.HasIndex(e => e.IsTop);                  // 按置顶筛选
+            entity.HasIndex(e => e.UpdateTime);             // 按更新时间取最新
         });
     }
 }
