@@ -284,6 +284,44 @@ public class MemMemberService : IMemMemberService
     }
 
     // ============================================================
+    // 6.2 小程序会员本人重置登录密码（校验旧密码 + BCrypt 加密覆盖）
+    // ============================================================
+    public async Task<ApiResponse<object>> SelfResetPasswordAsync(long memberId, string oldPassword, string newPassword)
+    {
+        // 1. 会员必须存在且未被删除
+        var member = await _repository.GetByIdTrackedAsync(memberId);
+        if (member == null || member.IsDeleted == 1)
+        {
+            return ApiResponse<object>.Fail("会员不存在", 404);
+        }
+
+        // 2. 旧密码校验（BCrypt 比对库里密文；空值也判错，避免空密码绕过）
+        if (string.IsNullOrWhiteSpace(oldPassword) || !BCrypt.Net.BCrypt.Verify(oldPassword, member.Password))
+        {
+            return ApiResponse<object>.Fail("原登录密码不正确");
+        }
+
+        // 3. 新密码长度下限校验（与新增/编辑保持一致）
+        if (string.IsNullOrWhiteSpace(newPassword) || newPassword.Trim().Length < 6)
+        {
+            return ApiResponse<object>.Fail("新密码长度不能少于 6 位");
+        }
+
+        // 4. 新密码不能与旧密码相同（避免无意义操作，降低撞库/重放风险）
+        if (BCrypt.Net.BCrypt.Verify(newPassword.Trim(), member.Password))
+        {
+            return ApiResponse<object>.Fail("新密码不能与旧密码相同");
+        }
+
+        // 5. BCrypt(cost=12) 加密覆盖原密码（绝不持久化明文）
+        member.Password = BCrypt.Net.BCrypt.HashPassword(newPassword.Trim(), workFactor: 12);
+
+        await _repository.SaveChangesAsync();
+
+        return ApiResponse<object>.Success(new { id = member.Id }, "密码重置成功，请使用新密码重新登录");
+    }
+
+    // ============================================================
     // 映射辅助方法（统一回填等级/状态中文名）
     // ============================================================
     /// <summary>

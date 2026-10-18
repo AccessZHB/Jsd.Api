@@ -29,6 +29,9 @@ public interface IMemMemberService
     /// <summary>后台重置客户登录密码（BCrypt 加密覆盖，绝不落明文）</summary>
     Task<ApiResponse<object>> ResetPasswordAsync(long id, string newPassword);
 
+    /// <summary>小程序会员本人重置登录密码（校验旧密码 + BCrypt 加密覆盖，绝不落明文）</summary>
+    Task<ApiResponse<object>> SelfResetPasswordAsync(long memberId, string oldPassword, string newPassword);
+
     // ===================== 小程序端（会员自助） =====================
 
     /// <summary>

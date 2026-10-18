@@ -16,6 +16,7 @@ namespace Jsd.Api.Controllers;
 /// 接口清单：
 ///   1. GET    /api/address/list   当前会员地址列表（默认地址排前）
 ///   2. POST   /api/address/save   新增/修改地址（Name/Phone/Province/City/District/Detail/IsDefault）
+///   3. POST   /api/address/delete 删除地址（软删除；校验归属；删默认地址时自动提升其他地址为默认）
 /// </summary>
 [ApiController]
 [Route("api/address")]
@@ -141,5 +142,59 @@ public class AddressController : ControllerBase
         await _db.SaveChangesAsync();
 
         return ApiResponse<long>.Success(entity.Id, dto.Id > 0 ? "地址已更新" : "地址已保存");
+    }
+
+    // ============================================================
+    // 3. 删除地址
+    // ============================================================
+
+    /// <summary>
+    /// 3. 删除收货地址（软删除）。
+    /// 从 JWT 取当前会员 member_id，校验地址归属，杜绝越权删除他人地址；
+    /// 若删除的是默认地址且仍有其他地址，自动将最新一条设为默认，保证会员始终有默认地址。
+    /// 示例：POST /api/address/delete
+    ///   body: { "id": 12 }
+    /// </summary>
+    [HttpPost("delete")]
+    [ProducesResponseType(typeof(ApiResponse<bool>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ApiResponse<bool>), StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(typeof(ApiResponse<bool>), StatusCodes.Status404NotFound)]
+    public async Task<ApiResponse<bool>> Delete([FromBody] AddressDeleteDto dto)
+    {
+        var memberId = _currentUser.MemberId;
+        if (memberId <= 0)
+        {
+            return ApiResponse<bool>.Fail("未获取到登录会员信息", 401);
+        }
+
+        // 仅允许删除当前会员自己的、未删除的地址
+        var entity = await _db.MemMemberAddresses
+            .FirstOrDefaultAsync(a => a.Id == dto.Id && a.MemberId == memberId && a.IsDeleted == 0);
+        if (entity == null)
+        {
+            return ApiResponse<bool>.Fail("地址不存在或不属于当前会员", 404);
+        }
+
+        var wasDefault = entity.IsDefault == 1;
+
+        // 软删除：置 is_deleted=1（与 list/save 的过滤口径一致）
+        entity.IsDeleted = 1;
+
+        // 删的是默认地址，且还有其他地址：自动把最新一条提升为默认，保证始终有默认地址
+        if (wasDefault)
+        {
+            var next = await _db.MemMemberAddresses
+                .Where(a => a.MemberId == memberId && a.Id != entity.Id && a.IsDeleted == 0)
+                .OrderByDescending(a => a.Id)
+                .FirstOrDefaultAsync();
+            if (next != null)
+            {
+                next.IsDefault = 1;
+            }
+        }
+
+        await _db.SaveChangesAsync();
+
+        return ApiResponse<bool>.Success(true, wasDefault ? "默认地址已删除，已自动将其他地址设为默认" : "地址已删除");
     }
 }

@@ -74,6 +74,14 @@ public class AddressSaveDto
     public bool IsDefault { get; set; }
 }
 
+/// <summary>删除收货地址入参（POST /api/address/delete；按当前登录会员校验归属）</summary>
+public class AddressDeleteDto
+{
+    /// <summary>要删除的地址ID</summary>
+    [Range(1, long.MaxValue, ErrorMessage = "地址ID非法")]
+    public long Id { get; set; }
+}
+
 /// <summary>订单明细入参（预计算 / 提交共用）：只需 SKU + 数量 + 前端透传的规格/光度 JSON</summary>
 public class OrderSubmitItemDto
 {

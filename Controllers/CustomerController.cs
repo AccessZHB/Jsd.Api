@@ -106,4 +106,29 @@ public class CustomerController : ControllerBase
 
         return await _memberService.ResetPasswordAsync(id, dto.NewPassword);
     }
+
+    /// <summary>
+    /// 小程序会员本人重置登录密码。
+    /// 仅【小程序会员令牌】可调（携带 user_type=member 声明 + 可解析的 member_id 声明）；
+    /// 管理员令牌不带 user_type=member，会被拒绝（管理员重置请走 POST /api/customer/{id}/reset-password）。
+    /// 请求体：{ "oldPassword":"***", "newPassword":"newPass123" }
+    /// 流程：后端从 JWT 取 member_id（本人）→ 校验旧密码(BCrypt比对) → 校验新密码格式 → BCrypt(cost=12) 加密覆盖 → 保存。
+    /// </summary>
+    [HttpPost("reset-password")]
+    [Authorize]
+    public async Task<ApiResponse<object>> SelfResetPassword([FromBody] SelfResetPasswordDto dto)
+    {
+        // 仅小程序会员可调用：必须有 user_type=member 声明，并能解析出 member_id
+        if (!User.HasClaim("user_type", "member"))
+        {
+            return ApiResponse<object>.Fail("无权访问：仅小程序会员可重置本人密码", 403);
+        }
+        var memberIdClaim = User.FindFirst("member_id")?.Value;
+        if (!long.TryParse(memberIdClaim, out var memberId) || memberId <= 0)
+        {
+            return ApiResponse<object>.Fail("无法识别当前会员身份，请重新登录", 401);
+        }
+
+        return await _memberService.SelfResetPasswordAsync(memberId, dto.OldPassword, dto.NewPassword);
+    }
 }
