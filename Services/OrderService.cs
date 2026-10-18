@@ -24,6 +24,9 @@ namespace Jsd.Api.Services;
 ///   ● 状态 → 已支付(Paid)：按明细逐条【扣减 prod_sku.stock】，并写 log_stock_log
 ///     （change_type=4 订单扣减，ref_type='order'，ref_id=订单ID）。
 ///     采用【乐观锁 CAS】扣减，防止并发超卖；扣减后库存为负直接抛业务异常回滚。
+///   ● 下单创建（SubmitAsync / CreateAsync）：同步按商品聚合累加【prod_info.sales_count】
+///     （驱动商品列表"已售"）。与订单写入同事务，订单失败回滚则不累加；同一订单仅创建一次，
+///     天然幂等，不会因重复调用接口 / 重复支付回调而重复累加。
 ///   ● 状态 → 已完成(Completed)：按明细逐条【增加 prod_sku.sales_count】（销量）。
 ///     注意：完成阶段【不再动库存】——库存已在支付时扣过，避免重复扣减。
 ///   ● 其余状态变更（发货/关闭/改备注）不涉及库存与销量。
@@ -378,6 +381,9 @@ public class OrderService : IOrderService
             }
             await _itemRepository.AddRangeAsync(items);
             await _db.SaveChangesAsync();
+
+            // 8) 累加商品销量（prod_info.sales_count）：与订单创建同事务，订单失败回滚则不累加
+            await IncrementProductSalesAsync(items);
 
             // 7) 【资金冻结】可用余额 → 冻结余额（与订单同事务，失败整体回滚）
             if (payAmount > 0)
@@ -1018,6 +1024,10 @@ public class OrderService : IOrderService
             await _itemRepository.AddRangeAsync(items);
             await _db.SaveChangesAsync();
 
+            // 8) 累加商品销量（prod_info.sales_count）：与订单创建同事务，订单失败回滚则不累加；
+            //    按商品聚合本次下单数量，数据库级原子自增，天然不重复（同订单只建一次）。
+            await IncrementProductSalesAsync(items);
+
             // ============================================================
             // 【支付方式分支】
             //   余额支付(4)      → 下单即付：扣库存 + 扣余额 + 置已支付；
@@ -1332,6 +1342,36 @@ public class OrderService : IOrderService
         }
 
         return items;
+    }
+
+    /// <summary>
+    /// 【销量累加】订单创建/支付事务内，按商品聚合累加 prod_info.sales_count。
+    /// 设计要点：
+    ///   1) 与订单写入共用同一事务——订单创建失败（回滚）时，销量自增一并回滚，不会脏加；
+    ///   2) 使用 ExecuteUpdate 在数据库层做原子自增（COALESCE(sales_count,0)+qty），
+    ///      避免并发竞态下的"读-改-写"丢失更新；
+    ///   3) 同一订单只创建一次，因此本方法天然不会被重复调用，无需额外幂等标记；
+    ///      支付回调（PayAsync / MarkPaidFromWriteOffAsync）不会重新进入下单事务，
+    ///      故不会因重复回调导致销量重复累加。
+    /// </summary>
+    private async Task IncrementProductSalesAsync(List<TrxOrderItem> items)
+    {
+        if (items == null || items.Count == 0) return;
+
+        // 同一商品可能拆成多个 SKU 明细，按商品(prod_info)聚合总数量
+        var salesByProduct = items
+            .GroupBy(i => i.ProdInfoId)
+            .Select(g => new { ProdInfoId = g.Key, Qty = g.Sum(i => i.Quantity) })
+            .Where(g => g.Qty > 0)
+            .ToList();
+
+        foreach (var s in salesByProduct)
+        {
+            // 数据库级原子自增：UPDATE prod_info SET sales_count = COALESCE(sales_count,0) + @qty WHERE id = @id
+            await _db.ProdInfos
+                .Where(p => p.Id == s.ProdInfoId)
+                .ExecuteUpdateAsync(p => p.SetProperty(x => x.SalesCount, x => (x.SalesCount ?? 0) + s.Qty));
+        }
     }
 
     /// <summary>
