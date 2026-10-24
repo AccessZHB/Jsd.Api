@@ -13,3 +13,8 @@ appsettings.Development.json
 
 # 日志
 *.log
+# 忽略 wwwroot/upload 目录下的所有 .jpg 文件
+wwwroot/upload/*.jpg
+
+# 或者，如果希望忽略该目录下所有类型的上传测试文件（更通用）
+# wwwroot/upload/*
