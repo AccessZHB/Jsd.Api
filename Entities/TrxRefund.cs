@@ -41,6 +41,17 @@ public class TrxRefund
     [Column("order_no")]
     public string? OrderNo { get; set; }
 
+    /// <summary>
+    /// 申请售后前的订单状态（order_status）。
+    /// 会员申请售后续将订单置为 5-售后中；审核驳回时据此恢复订单原状。
+    /// </summary>
+    [Column("original_order_status")]
+    public int? OriginalOrderStatus { get; set; }
+
+    /// <summary>来源：1-后台人工创建 2-小程序会员自助申请</summary>
+    [Column("source")]
+    public int Source { get; set; } = 1;
+
     /// <summary>申请人（关联 mem_member.id）</summary>
     [Column("member_id")]
     public long MemberId { get; set; }

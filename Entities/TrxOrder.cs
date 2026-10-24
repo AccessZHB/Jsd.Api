@@ -112,6 +112,11 @@ public class TrxOrder
     [Column("ship_no")]
     public string ShipNo { get; set; } = string.Empty;
 
+    /// <summary>物流面单照片路径（发货时可上传面单/条形码照片，相对路径如 /upload/202610/xxx.jpg）</summary>
+    [StringLength(500)]
+    [Column("shipping_image_url")]
+    public string? ShippingImageUrl { get; set; }
+
     // ==================== 备注 / 关闭 / 完成 ====================
 
     /// <summary>买家备注（下单时买家填写）</summary>

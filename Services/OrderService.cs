@@ -671,6 +671,8 @@ public class OrderService : IOrderService
         {
             order.ShipCompany = dto.ShipCompany;
             order.ShipNo = dto.ShipNo;
+            // 物流面单照片：覆盖写入（允许重新发货时更新/清空）
+            order.ShippingImageUrl = (dto.ShippingImageUrl ?? string.Empty).Trim();
             order.OrderStatus = OrderStatuses.Shipped;   // 已发货（待收货）
 
             // 【财务结算联动】信用订单（is_credit=1）发货后自动生成应收账款。
@@ -685,7 +687,7 @@ public class OrderService : IOrderService
             await tx.CommitAsync();
 
             return ApiResponse<object>.Success(
-                new { id = id, orderNo = order.OrderNo, shipCompany = order.ShipCompany, shipNo = order.ShipNo },
+                new { id = id, orderNo = order.OrderNo, shipCompany = order.ShipCompany, shipNo = order.ShipNo, shippingImageUrl = order.ShippingImageUrl },
                 "发货成功");
         }
         catch
@@ -1494,6 +1496,7 @@ public class OrderService : IOrderService
 
         dto.ShipCompany = o.ShipCompany;
         dto.ShipNo = o.ShipNo;
+        dto.ShippingImageUrl = o.ShippingImageUrl ?? string.Empty;
 
         dto.BuyerRemark = o.BuyerRemark;
         dto.MerchantRemark = o.MerchantRemark;

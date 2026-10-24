@@ -131,3 +131,78 @@ public class RefundCreateResult
 }
 
 #endregion
+
+#region 会员端（小程序）DTO
+
+/// <summary>
+/// 会员自助申请售后入参（POST /api/mp/after-sales/apply）
+/// 与后台 CreateRefundDto 的区别：
+///   - 不放宽金额/类型校验规则，但允许「已支付(1)/已发货(2)/已完成(3)」订单申请（后台仅允许已完成）；
+///   - member_id 一律由后端从 JWT 解析，绝不信任前端传参。
+/// </summary>
+public class MpApplyRefundDto
+{
+    /// <summary>订单ID（trx_order.id，必须属于当前登录会员）</summary>
+    [Required]
+    public long OrderId { get; set; }
+
+    /// <summary>退款金额（元，&gt; 0 且 ≤ 订单可退金额）</summary>
+    [Required]
+    [Range(0.01, double.MaxValue, ErrorMessage = "退款金额必须大于 0")]
+    public decimal RefundAmount { get; set; }
+
+    /// <summary>退款类型：1-仅退款 2-退货退款</summary>
+    [Required]
+    [Range(1, 2, ErrorMessage = "退款类型不合法（1-仅退款 2-退货退款）")]
+    public int RefundType { get; set; }
+
+    /// <summary>退款原因</summary>
+    [Required]
+    [StringLength(255, MinimumLength = 2, ErrorMessage = "请填写退款原因（2~255 字）")]
+    public string RefundReason { get; set; } = string.Empty;
+
+    /// <summary>凭证图片（相对路径，多个用逗号分隔）</summary>
+    [StringLength(500)]
+    public string? VoucherImages { get; set; }
+}
+
+/// <summary>会员端售后列表：订单商品摘要（便于小程序卡片直接展示）</summary>
+public class MpRefundOrderItemDto
+{
+    public string ProdName { get; set; } = string.Empty;
+    public string? SkuName { get; set; }
+    public string? Image { get; set; }
+    public int Quantity { get; set; }
+    public decimal Price { get; set; }
+}
+
+/// <summary>
+/// 会员端售后列表项（GET /api/mp/after-sales/list）
+/// 状态文案按小程序展示口径细化：待审核→售后审核中、待退款→退款中、
+/// 已退款→退款成功、已驳回→售后关闭。
+/// </summary>
+public class MpRefundListItemDto
+{
+    public long Id { get; set; }
+    public string RefundNo { get; set; } = string.Empty;
+    public long OrderId { get; set; }
+    public string? OrderNo { get; set; }
+    public decimal RefundAmount { get; set; }
+    public int RefundType { get; set; }
+    public string RefundTypeText { get; set; } = string.Empty;
+    public string? RefundReason { get; set; }
+    public string? VoucherImages { get; set; }
+    public int Status { get; set; }
+    public string StatusText { get; set; } = string.Empty;
+    /// <summary>订单当前状态（5-售后中 / 4-已关闭 …）</summary>
+    public int OrderStatus { get; set; }
+    public decimal OrderPayAmount { get; set; }
+    public string? AdminRemark { get; set; }
+    public DateTime? HandleTime { get; set; }
+    public DateTime? RefundTime { get; set; }
+    public DateTime CreateTime { get; set; }
+    /// <summary>订单商品摘要（最多取前 3 条，够卡片展示）</summary>
+    public List<MpRefundOrderItemDto> Items { get; set; } = new();
+}
+
+#endregion

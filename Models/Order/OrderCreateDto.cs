@@ -121,6 +121,13 @@ public class OrderShipDto
     [Required(ErrorMessage = "物流单号不能为空")]
     [StringLength(100, ErrorMessage = "物流单号不能超过100个字符")]
     public string ShipNo { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 物流面单照片路径（发货时上传的面单/条形码照片，相对路径 /upload/yyyyMM/xxx.jpg）。
+    /// 选填：未上传则留空；上传接口见 /api/file/upload（或 /api/file/upload/image）。
+    /// </summary>
+    [StringLength(500, ErrorMessage = "面单图片路径不能超过500个字符")]
+    public string ShippingImageUrl { get; set; } = string.Empty;
 }
 
 /// <summary>

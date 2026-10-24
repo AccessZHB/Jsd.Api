@@ -41,6 +41,12 @@ public static class OrderStatuses
     /// <summary>4-已关闭（终态）</summary>
     public const int Closed = 4;
 
+    /// <summary>
+    /// 5-售后中（会员申请退款/售后后进入；审核通过并完成退款后置 4-已关闭，
+    /// 审核驳回则恢复为 original_order_status 记录的原有状态）
+    /// </summary>
+    public const int AfterSale = 5;
+
     /// <summary>订单状态 → 中文名（列表 Tag 展示）</summary>
     public static string GetName(int status) => status switch
     {
@@ -49,6 +55,7 @@ public static class OrderStatuses
         Shipped => "已发货",
         Completed => "已完成",
         Closed => "已关闭",
+        AfterSale => "售后中",
         _ => "未知"
     };
 }
@@ -137,6 +144,8 @@ public class OrderListDto
     // ===== 物流 =====
     public string ShipCompany { get; set; } = string.Empty;
     public string ShipNo { get; set; } = string.Empty;
+    /// <summary>物流面单照片路径（相对路径 /upload/yyyyMM/xxx.jpg，可能为空）</summary>
+    public string ShippingImageUrl { get; set; } = string.Empty;
 
     // ===== 备注 / 关闭 / 完成 =====
     public string BuyerRemark { get; set; } = string.Empty;

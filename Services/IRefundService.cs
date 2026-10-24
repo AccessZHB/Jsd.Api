@@ -29,4 +29,17 @@ public interface IRefundService
     /// 供 ReturnService 在"仓库收货后自动触发退款"时复用，保证跨服务操作在同一事务内一次性提交。
     /// </summary>
     Task ExecuteRefundCoreAsync(TrxRefund refund, long operatorId, string operatorName);
+
+    /// <summary>
+    /// 会员自助申请售后（小程序端 POST /api/mp/after-sales/apply）。
+    /// 与后台 CreateAsync 的差异：允许「已支付(1)/已发货(2)/已完成(3)」订单申请；
+    /// 强制校验订单归属当前会员；创建后把订单置为 5-售后中。
+    /// </summary>
+    Task<ApiResponse<RefundCreateResult>> ApplyByMemberAsync(MpApplyRefundDto dto, long memberId);
+
+    /// <summary>
+    /// 会员售后列表（小程序端 GET /api/mp/after-sales/list）。
+    /// 仅返回该会员本人的售后单，附带订单商品摘要与小程序口径的状态文案。
+    /// </summary>
+    Task<ApiResponse<PagedResult<MpRefundListItemDto>>> GetMyListAsync(long memberId, int page, int pageSize);
 }

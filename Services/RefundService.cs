@@ -3,6 +3,7 @@ using FluentValidation;
 using Jsd.Api.Entities;
 using Jsd.Api.Models.AfterSale;
 using Jsd.Api.Models.Common;
+using Jsd.Api.Models.Order;
 using Jsd.Api.Repositories;
 using Jsd.Api.Validators;
 using Microsoft.EntityFrameworkCore;
@@ -247,10 +248,18 @@ public class RefundService : IRefundService
             await AppendLogAsync(refund.Id, RefundLogActions.Approved, _currentUser.UserId,
                 _currentUser.UserName, dto.AdminRemark);
 
-            // 退货退款：审核通过后自动生成一张"待退货"的退货单
+            // 退货退款：审核通过后自动生成一张"待退货"的退货单（仓库收货后才会真正打款）
             if (refund.RefundType == (int)RefundType.ReturnAndRefund)
             {
                 await CreateReturnFromRefundAsync(refund);
+            }
+            else
+            {
+                // 仅退款：审核通过即刻完成资金闭环 —— 原路退回会员余额 + 关闭订单。
+                // 需求要求「管理员点同意后必须触发退款逻辑并关闭订单」，
+                // 因此这里直接复用执行退款核心（幂等：仅 status=1 才会真正打款）。
+                await ExecuteRefundCoreAsync(refund, _currentUser.UserId, _currentUser.UserName);
+                await CloseOrderAfterRefundAsync(refund);
             }
         }
         else
@@ -261,6 +270,9 @@ public class RefundService : IRefundService
             refund.AdminRemark = dto.AdminRemark;
             await AppendLogAsync(refund.Id, RefundLogActions.Rejected, _currentUser.UserId,
                 _currentUser.UserName, dto.AdminRemark);
+
+            // 驳回：恢复订单原状（回到申请售后之前记录的状态）
+            await RestoreOrderStatusAsync(refund);
         }
 
         await _db.SaveChangesAsync();
@@ -399,6 +411,216 @@ public class RefundService : IRefundService
             await _balanceService.RefundBackAsync(
                 refund.MemberId, refund.RefundAmount, refund.Id, $"退款单 {refund.RefundNo} 退回余额");
         }
+    }
+
+    // ============================================================
+    // 6. 会员端（小程序）自助申请售后
+    // ============================================================
+
+    /// <summary>
+    /// 会员自助申请售后（POST /api/mp/after-sales/apply）。
+    /// 相比后台 CreateAsync 放宽了订单状态：已支付(1)/已发货(2)/已完成(3) 均可申请
+    /// （后台仅限已完成，因为后台是代客操作；会员自助需覆盖"未发货/未收货就想退"的场景）。
+    /// 安全：memberId 由控制器从 JWT 解析传入，且强制校验 order.BuyerId == memberId，防越权。
+    /// 副作用：订单状态置为 5-售后中，并把原状态写入 original_order_status 供驳回恢复。
+    /// </summary>
+    public async Task<ApiResponse<RefundCreateResult>> ApplyByMemberAsync(MpApplyRefundDto dto, long memberId)
+    {
+        // 字段级校验（[Required]/[Range] 等）由 [ApiController] 在进入 Service 前已完成，
+        // 这里只做业务规则校验。
+        var order = await _orderRepo.FirstOrDefaultAsync(o => o.Id == dto.OrderId && o.IsDeleted == 0);
+        if (order == null)
+        {
+            return ApiResponse<RefundCreateResult>.Fail("订单不存在", 404);
+        }
+
+        // 越权防护：订单不属于当前会员时，按"不存在"返回，避免泄露他人订单信息
+        if (order.BuyerId != memberId)
+        {
+            return ApiResponse<RefundCreateResult>.Fail("订单不存在", 404);
+        }
+
+        // 可申请售后的订单状态：1-已支付(待发货) 2-已发货(待收货) 3-已完成
+        if (order.OrderStatus != OrderStatuses.Paid &&
+            order.OrderStatus != OrderStatuses.Shipped &&
+            order.OrderStatus != OrderStatuses.Completed)
+        {
+            return ApiResponse<RefundCreateResult>.Fail(
+                $"当前订单状态（{OrderStatuses.GetName(order.OrderStatus)}）不支持申请售后");
+        }
+
+        // 同一订单不允许重复提交进行中的售后单（0-待审核 / 1-待退款）
+        var hasPending = await _db.TrxRefunds.AnyAsync(r =>
+            r.OrderId == order.Id &&
+            (r.Status == (int)RefundStatus.Pending || r.Status == (int)RefundStatus.Approved));
+        if (hasPending)
+        {
+            return ApiResponse<RefundCreateResult>.Fail("该订单已有进行中的售后申请，请勿重复提交");
+        }
+
+        // 金额上限：订单实付 - 已占用（待退款 + 已退款）
+        var refundedSum = await _refundRepo.GetRefundedSumByOrderAsync(order.Id);
+        var available = order.PayAmount - refundedSum;
+        if (dto.RefundAmount > available)
+        {
+            return ApiResponse<RefundCreateResult>.Fail(
+                $"退款金额超出可退额度（订单实付 {order.PayAmount:0.00}，已申请 {refundedSum:0.00}，可退 {available:0.00}）");
+        }
+
+        // 单号生成 + 唯一索引兜底重试
+        TrxRefund? refund = null;
+        for (var i = 0; i < MaxNoRetry; i++)
+        {
+            var candidate = _refundRepo.GenerateRefundNo();
+            if (await _refundRepo.ExistsRefundNoAsync(candidate))
+            {
+                continue;
+            }
+
+            refund = new TrxRefund
+            {
+                RefundNo = candidate,
+                OrderId = order.Id,
+                OrderNo = order.OrderNo,
+                // 记下申请前的订单状态，供审核驳回时恢复原状
+                OriginalOrderStatus = order.OrderStatus,
+                Source = 2, // 2-小程序会员自助
+                MemberId = memberId,
+                RefundAmount = dto.RefundAmount,
+                RefundType = dto.RefundType,
+                RefundReason = dto.RefundReason,
+                VoucherImages = dto.VoucherImages,
+                Status = (int)RefundStatus.Pending
+            };
+
+            await _refundRepo.AddAsync(refund);
+            try
+            {
+                await _db.SaveChangesAsync();
+                break;
+            }
+            catch (DbUpdateException)
+            {
+                refund = null;
+            }
+        }
+
+        if (refund == null)
+        {
+            return ApiResponse<RefundCreateResult>.Fail("生成退款单号失败，请稍后重试");
+        }
+
+        // 订单进入「售后中」，并留痕（与售后单在同一 SaveChanges 内提交）
+        order.OrderStatus = OrderStatuses.AfterSale;
+        await AppendLogAsync(refund.Id, RefundLogActions.Created, memberId, "会员自助",
+            $"小程序提交售后申请（{RefundTypeHelper.GetName(refund.RefundType)}）");
+        await _db.SaveChangesAsync();
+
+        return ApiResponse<RefundCreateResult>.Success(
+            new RefundCreateResult { Id = refund.Id, RefundNo = refund.RefundNo },
+            "售后申请已提交，等待审核");
+    }
+
+    /// <summary>
+    /// 会员售后列表（GET /api/mp/after-sales/list）。
+    /// 强制按 memberId 过滤（绝不信任前端参数），并按订单明细补全商品摘要，
+    /// 让小程序「退款/售后」Tab 的卡片能直接展示商品图 + 名称 + 状态标签。
+    /// </summary>
+    public async Task<ApiResponse<PagedResult<MpRefundListItemDto>>> GetMyListAsync(long memberId, int page, int pageSize)
+    {
+        page = page < 1 ? 1 : page;
+        pageSize = pageSize < 1 ? 10 : (pageSize > 50 ? 50 : pageSize);
+
+        var query = _db.TrxRefunds.AsNoTracking().Where(r => r.MemberId == memberId);
+        var total = await query.CountAsync();
+        var items = await query
+            .OrderByDescending(r => r.CreateTime)
+            .Skip((page - 1) * pageSize)
+            .Take(pageSize)
+            .ToListAsync();
+
+        var orderIds = items.Select(r => r.OrderId).Distinct().ToList();
+
+        // 批量补全订单与明细，避免 N+1
+        var orderMap = orderIds.Count == 0
+            ? new Dictionary<long, TrxOrder>()
+            : (await _orderRepo.GetListAsync(o => orderIds.Contains(o.Id))).ToDictionary(o => o.Id);
+        var orderItems = orderIds.Count == 0
+            ? new List<TrxOrderItem>()
+            : await _orderItemRepo.GetListAsync(oi => orderIds.Contains(oi.OrderId));
+
+        var dtos = items.Select(r =>
+        {
+            orderMap.TryGetValue(r.OrderId, out var order);
+            return new MpRefundListItemDto
+            {
+                Id = r.Id,
+                RefundNo = r.RefundNo,
+                OrderId = r.OrderId,
+                OrderNo = r.OrderNo,
+                RefundAmount = r.RefundAmount,
+                RefundType = r.RefundType,
+                RefundTypeText = RefundTypeHelper.GetName(r.RefundType),
+                RefundReason = r.RefundReason,
+                VoucherImages = r.VoucherImages,
+                Status = r.Status,
+                StatusText = GetMpStatusText(r.Status),
+                OrderStatus = order?.OrderStatus ?? 0,
+                OrderPayAmount = order?.PayAmount ?? 0m,
+                AdminRemark = r.AdminRemark,
+                HandleTime = r.HandleTime,
+                RefundTime = r.RefundTime,
+                CreateTime = r.CreateTime,
+                Items = orderItems
+                    .Where(oi => oi.OrderId == r.OrderId)
+                    .Take(3)
+                    .Select(oi => new MpRefundOrderItemDto
+                    {
+                        ProdName = oi.ProdName,
+                        SkuName = oi.SkuName,
+                        Image = oi.ProductImage,
+                        Quantity = oi.Quantity,
+                        Price = oi.UnitPrice
+                    })
+                    .ToList()
+            };
+        }).ToList();
+
+        return ApiResponse<PagedResult<MpRefundListItemDto>>.Success(
+            PagedResult<MpRefundListItemDto>.Create(dtos, total, page, pageSize));
+    }
+
+    /// <summary>小程序口径的售后状态文案（比后台文案更贴近消费者视角）</summary>
+    private static string GetMpStatusText(int status) => status switch
+    {
+        (int)RefundStatus.Pending => "售后审核中",
+        (int)RefundStatus.Approved => "退款中",
+        (int)RefundStatus.Refunded => "退款成功",
+        (int)RefundStatus.Rejected => "售后关闭",
+        _ => "未知"
+    };
+
+    /// <summary>仅退款审核通过后关闭订单（钱已退回，订单终止）</summary>
+    private async Task CloseOrderAfterRefundAsync(TrxRefund refund)
+    {
+        var order = await _orderRepo.FirstOrDefaultAsync(o => o.Id == refund.OrderId);
+        if (order == null)
+        {
+            return;
+        }
+        order.OrderStatus = OrderStatuses.Closed;
+    }
+
+    /// <summary>审核驳回后恢复订单原状（仅当订单仍处于"售后中"时才回滚，避免并发误改）</summary>
+    private async Task RestoreOrderStatusAsync(TrxRefund refund)
+    {
+        var order = await _orderRepo.FirstOrDefaultAsync(o => o.Id == refund.OrderId);
+        if (order == null || order.OrderStatus != OrderStatuses.AfterSale)
+        {
+            return;
+        }
+        // 优先用申请时记录的原状态；老数据无记录时兜底回"已完成"
+        order.OrderStatus = refund.OriginalOrderStatus ?? OrderStatuses.Completed;
     }
 
     // ============================================================
