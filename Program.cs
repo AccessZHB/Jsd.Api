@@ -92,6 +92,9 @@ builder.Services.AddSingleton<JwtService>();          // JWT 无状态，单例�
 builder.Services.AddScoped<CurrentUserService>();     // 依赖 HttpContext，按请求域
 builder.Services.AddHttpContextAccessor();            // 让 Service 能拿到 HttpContext
 
+// 数据看板（经营分析）模块
+builder.Services.AddScoped<DashboardService>();
+
 // 基础数据 & 商品管理模块 —— 服务层
 builder.Services.AddScoped<ISupSupplierService, SupSupplierService>();
 builder.Services.AddScoped<IProdCategoryService, ProdCategoryService>();
