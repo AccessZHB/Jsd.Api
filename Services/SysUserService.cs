@@ -134,7 +134,8 @@ public class SysUserService : ISysUserService
 
     /// <summary>
     /// 批量删除用户（物理删除）。
-    /// 保护规则：超级管理员不允许删除；不能删除当前登录账号。
+    /// 保护规则：不能删除当前登录账号；至少保留一个超级管理员账号（允许删除超管，
+    /// 但禁止把最后一个超管删光，否则系统失去最高权限入口）。
     /// 所有校验通过后一次性 SaveChanges —— 要么全删，要么全不删。
     /// </summary>
     public async Task<ApiResponse<object>> DeleteBatchAsync(long[] ids)
@@ -156,13 +157,18 @@ public class SysUserService : ISysUserService
         }
 
         // 3. 业务保护校验
-        if (users.Any(u => u.IsSuper == 1))
-        {
-            return ApiResponse<object>.Fail("超级管理员账号不允许删除");
-        }
+        //    3.1 不允许删除当前登录账号（自己把自己删了就再也无法登录/管理）
         if (ids.Contains(_currentUser.UserId))
         {
             return ApiResponse<object>.Fail("不能删除当前登录账号");
+        }
+        //    3.2 至少保留一个超级管理员账号：删除后若系统不再有超管则拦截。
+        //        允许删除超管，但禁止把最后一个超管删光（否则系统失去最高权限入口）。
+        var totalSuper = await _userRepository.Query().CountAsync(u => u.IsSuper == 1);
+        var deletingSuper = users.Count(u => u.IsSuper == 1);
+        if (totalSuper - deletingSuper < 1)
+        {
+            return ApiResponse<object>.Fail("至少保留一个超级管理员账号");
         }
 
         // 4. 删除并保存
