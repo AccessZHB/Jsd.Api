@@ -33,6 +33,7 @@ public class PaymentService : IPaymentService
     private readonly IOrderService _orderService;
     private readonly PaymentCreateValidator _createValidator;
     private readonly WriteOffInputValidator _writeOffValidator;
+    private readonly ILogger<PaymentService> _logger;
 
     public PaymentService(
         AppDbContext db,
@@ -43,7 +44,8 @@ public class PaymentService : IPaymentService
         IMapper mapper,
         IOrderService orderService,
         PaymentCreateValidator createValidator,
-        WriteOffInputValidator writeOffValidator)
+        WriteOffInputValidator writeOffValidator,
+        ILogger<PaymentService> logger)
     {
         _db = db;
         _paymentRepository = paymentRepository;
@@ -54,6 +56,7 @@ public class PaymentService : IPaymentService
         _orderService = orderService;   // 核销结清应收后推进订单状态（待付款 → 已支付）
         _createValidator = createValidator;
         _writeOffValidator = writeOffValidator;
+        _logger = logger;
     }
 
     // ==================== 1. 列表 / 详情 ====================
@@ -470,6 +473,22 @@ public class PaymentService : IPaymentService
                 if (order == null)
                 {
                     throw new InvalidOperationException($"订单 {dto.OutTradeNo} 不存在，支付回调无法处理");
+                }
+
+                // ============================================================
+                // 【阶段七 · F-03】金额强校验（老回调通道同样必须校验）
+                // 原实现直接把订单置为已支付，从不比对金额 —— 回调说 0.01 元也能结清 1 万元订单。
+                // 不一致 → 抛异常 → 控制器返回失败 → 事务回滚，不入库。
+                // ============================================================
+                var expectedAmount = decimal.Round(order.PayAmount, 2, MidpointRounding.AwayFromZero);
+                var callbackAmount = decimal.Round(dto.Amount, 2, MidpointRounding.AwayFromZero);
+                if (callbackAmount != expectedAmount)
+                {
+                    _logger.LogError(
+                        "【支付金额不一致】outTradeNo={OutTradeNo} orderNo={OrderNo} 回调={Callback} 订单应付={Expected}",
+                        dto.OutTradeNo, order.OrderNo, callbackAmount, expectedAmount);
+                    throw new InvalidOperationException(
+                        $"回调金额({callbackAmount:0.00})与订单应付({expectedAmount:0.00})不一致，已拒绝入账");
                 }
 
                 // 仅"待付款"订单才推进：已支付/已发货/已完成/已关闭的一律不动，保证幂等。

@@ -22,13 +22,20 @@ namespace Jsd.Api.Controllers;
 public class PaymentCallbackController : ControllerBase
 {
     private readonly IPaymentService _paymentService;
+    private readonly IConfiguration _configuration;
 
-    public PaymentCallbackController(IPaymentService paymentService)
+    public PaymentCallbackController(IPaymentService paymentService, IConfiguration configuration)
     {
         _paymentService = paymentService;
+        _configuration = configuration;
     }
 
     /// <summary>
+    /// 【阶段七 · F-02】该回调通道是早期占位实现，**没有真实验签**（验签代码被注释）。
+    /// 任何人都能 POST 一个 JSON 把订单置为已支付，属高危入口。
+    /// 现在默认停用，仅当 `WeChat:LegacyCallbackEnabled=true` 时放行（灰度/排查用）；
+    /// 正式回调请使用已接入微信 V3 平台证书验签的 `POST /api/pay/notify`。
+    /// </summary>
     /// 微信支付结果回调
     ///
     /// 请求体（JSON）：
@@ -48,6 +55,13 @@ public class PaymentCallbackController : ControllerBase
     [HttpPost("wechat")]
     public async Task<ApiResponse<object>> Wechat([FromBody] WechatCallbackDto dto)
     {
+        // F-02：无验签通道默认关闭，防止伪造回调直接改订单状态
+        if (!_configuration.GetValue("WeChat:LegacyCallbackEnabled", false))
+        {
+            return ApiResponse<object>.Fail(
+                "该回调通道已停用（缺少验签），请使用 POST /api/pay/notify", 403);
+        }
+
         if (dto == null || string.IsNullOrWhiteSpace(dto.OutTradeNo))
         {
             return ApiResponse<object>.Fail("回调参数无效：缺少商户订单号");

@@ -1,3 +1,4 @@
+using Jsd.Api.Attributes;
 using Jsd.Api.Models.Common;
 using Jsd.Api.Models.Price;
 using Jsd.Api.Services;
@@ -58,6 +59,7 @@ public class RechargeController : ControllerBase
 
     /// <summary>后台代客充值（线下收款，直接入账）</summary>
     [HttpPost("admin-create")]
+    [SuperAdminOnly(Operation = "后台代客充值")]
     public async Task<ApiResponse<RechargeDto>> AdminCreate([FromBody] AdminRechargeDto dto)
     {
         return await _balanceService.AdminRechargeAsync(dto);
@@ -65,6 +67,7 @@ public class RechargeController : ControllerBase
 
     /// <summary>充值退款（仅已支付可退，需填退款原因）</summary>
     [HttpPost("{id:long}/refund")]
+    [SuperAdminOnly(Operation = "充值退款")]
     public async Task<ApiResponse<bool>> Refund(long id, [FromBody] RechargeRefundDto dto)
     {
         return await _balanceService.RefundRechargeAsync(id, dto);

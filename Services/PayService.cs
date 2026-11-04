@@ -346,6 +346,25 @@ public class PayService : IPayService
 
         if (paid)
         {
+            // ============================================================
+            // 【阶段七 · F-03】金额强校验（必须在任何写库之前完成）
+            //
+            // 三重比对：微信回调 amount.total（分） == 本地支付单 amount（分） == 业务订单 pay_amount（元→分）。
+            // 任一不一致：打 ERROR 日志 + 抛异常 → 上层转 500 → 微信按策略重试并触发告警。
+            // 绝不入库，避免"小额支付结清大额订单"或"篡改金额发货"。
+            // ============================================================
+            var payment = await _db.PaymentOrders.AsNoTracking()
+                .Where(p => p.OutTradeNo == outTradeNo)
+                .Select(p => new { p.Id, p.BizOrderId, p.Amount, p.Status })
+                .FirstOrDefaultAsync();
+
+            if (payment == null)
+            {
+                throw new InvalidOperationException($"支付单不存在：{outTradeNo}");
+            }
+
+            await EnsureAmountMatchedAsync(payment.BizOrderId, payment.Amount, txn.Total, outTradeNo);
+
             // 条件更新：只有当前状态不是 SUCCESS 才改成 SUCCESS（高并发安全，已 SUCCESS 返回 0）
             var updated = await _db.PaymentOrders
                 .Where(p => p.OutTradeNo == outTradeNo && p.Status != (int)PayOrderStatus.Success)
@@ -401,6 +420,59 @@ public class PayService : IPayService
         // 未超时且未支付：保持 PAYING，等下次查单 / 回调
         return new PayApplyResult(existing.Id, existing.TransactionId, existing.Status, false, "UNCHANGED",
             "订单仍在支付中（未超时），本次未变动");
+    }
+
+    /// <summary>
+    /// 【阶段七 · F-03】支付回调金额强校验。
+    ///
+    /// 微信回调是资金结算的最终依据，但"签名合法"只证明报文没被篡改，
+    /// 并不证明"金额就是这笔订单该付的钱"（例如商户侧配置错误、或攻击者用真实支付的小额单去回调大额订单）。
+    ///
+    /// 校验链：回调 amount.total（分） == 本地 payment_order.amount（分） == trx_order.pay_amount（元 ×100）。
+    /// 任一环节不一致 → ERROR 日志 + 抛异常（调用方转 500，微信会重试并告警），**不做任何入库**。
+    /// </summary>
+    private async Task EnsureAmountMatchedAsync(
+        long bizOrderId, long paymentAmountFen, int callbackTotalFen, string outTradeNo)
+    {
+        if (callbackTotalFen <= 0)
+        {
+            _logger.LogError("【支付金额异常】outTradeNo={OutTradeNo} 回调金额非正数：{Fen} 分", outTradeNo, callbackTotalFen);
+            throw new InvalidOperationException($"回调金额异常（{callbackTotalFen} 分），已拒绝入账");
+        }
+
+        if (callbackTotalFen != paymentAmountFen)
+        {
+            _logger.LogError(
+                "【支付金额不一致·支付单】outTradeNo={OutTradeNo} 回调={CallbackFen}分 本地支付单={LocalFen}分 差额={Diff}分",
+                outTradeNo, callbackTotalFen, paymentAmountFen, callbackTotalFen - paymentAmountFen);
+            throw new InvalidOperationException(
+                $"回调金额({callbackTotalFen}分)与支付单金额({paymentAmountFen}分)不一致，已拒绝入账");
+        }
+
+        var order = await _db.TrxOrders.AsNoTracking()
+            .Where(o => o.Id == bizOrderId && o.IsDeleted == 0)
+            .Select(o => new { o.OrderNo, o.PayAmount })
+            .FirstOrDefaultAsync();
+
+        if (order == null)
+        {
+            _logger.LogError("【支付金额校验失败】outTradeNo={OutTradeNo} 关联业务订单不存在：bizOrderId={BizOrderId}",
+                outTradeNo, bizOrderId);
+            throw new InvalidOperationException($"关联业务订单不存在（bizOrderId={bizOrderId}），已拒绝入账");
+        }
+
+        var orderFen = (long)Math.Round(order.PayAmount * 100m, MidpointRounding.AwayFromZero);
+        if (callbackTotalFen != orderFen)
+        {
+            _logger.LogError(
+                "【支付金额不一致·业务订单】outTradeNo={OutTradeNo} orderNo={OrderNo} 回调={CallbackFen}分 订单应付={OrderFen}分 差额={Diff}分",
+                outTradeNo, order.OrderNo, callbackTotalFen, orderFen, callbackTotalFen - orderFen);
+            throw new InvalidOperationException(
+                $"回调金额({callbackTotalFen}分)与订单应付({orderFen}分)不一致，已拒绝入账");
+        }
+
+        _logger.LogInformation("支付金额校验通过：outTradeNo={OutTradeNo} orderNo={OrderNo} amount={Fen}分",
+            outTradeNo, order.OrderNo, callbackTotalFen);
     }
 
     /// <summary>状态推进结果（内部聚合返回，避免变更跟踪器过期值问题）</summary>
