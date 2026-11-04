@@ -60,6 +60,10 @@ builder.Services.AddScoped<IOrderItemRepository, OrderItemRepository>();
 // 客户管理模块 —— 专用仓储
 builder.Services.AddScoped<IMemMemberRepository, MemMemberRepository>();
 
+// 购物车模块（mem_cart）—— 服务端购物车，cart_key 唯一 → 加工/不加工绝不合并
+builder.Services.AddScoped<ICartRepository, CartRepository>();
+builder.Services.AddScoped<ICartService, CartService>();
+
 // 财务结算模块 —— 专用仓储（应收 + 收款 + 支付日志）
 builder.Services.AddScoped<IReceivableRepository, ReceivableRepository>();
 builder.Services.AddScoped<IPaymentRepository, PaymentRepository>();
@@ -90,6 +94,12 @@ builder.Services.AddScoped<IPermissionService, PermissionService>();  // 后端�
 builder.Services.AddScoped<ISysRoleService, SysRoleService>();
 builder.Services.AddSingleton<JwtService>();          // JWT 无状态，单例即可
 builder.Services.AddScoped<CurrentUserService>();     // 依赖 HttpContext，按请求域
+
+// F-22：Token 黑名单（纯 IMemoryCache 实现，TTL=Token 剩余有效期；单实例部署足够）
+builder.Services.AddSingleton<ITokenBlacklistService, TokenBlacklistService>();
+
+// 阶段四：登录失败计数已迁移到数据库（mem_member.fail_count / lock_until），
+// 不再注册内存限流器 —— 计数跨进程共享，IIS 多实例/集群部署同样生效。
 builder.Services.AddHttpContextAccessor();            // 让 Service 能拿到 HttpContext
 
 // 数据看板（经营分析）模块
@@ -407,7 +417,40 @@ builder.Services.AddControllers(options =>
 // 确保静态文件根目录存在（图片上传保存到 wwwroot/upload）
 Directory.CreateDirectory(Path.Combine(builder.Environment.ContentRootPath, "wwwroot", "upload"));
 
+// ============================================================
+// 8.1 统一「模型校验失败」的响应格式
+//
+// 【为什么需要】[ApiController] 默认把 DTO 校验失败（[Required]/[Range]/IValidatableObject）
+// 渲染成 ProblemDetails（HTTP 400 + {type,title,errors}），而本项目全站契约是
+// ApiResponse{code,message,data}；小程序 request.ts 对 statusCode != 200 只会提示
+// "服务异常(400)"，用户看不到真正原因（例如"优惠金额不能大于商品总价！"）。
+// 这里统一改为 HTTP 200 + ApiResponse(code=400)，与业务失败保持一致的消费方式。
+// ============================================================
+builder.Services.Configure<Microsoft.AspNetCore.Mvc.ApiBehaviorOptions>(options =>
+{
+    options.InvalidModelStateResponseFactory = context =>
+    {
+        var firstError = context.ModelState
+            .Where(kv => kv.Value is { Errors.Count: > 0 })
+            .SelectMany(kv => kv.Value!.Errors)
+            .Select(e => string.IsNullOrWhiteSpace(e.ErrorMessage) ? "请求参数不合法" : e.ErrorMessage)
+            .FirstOrDefault() ?? "请求参数不合法";
+
+        return new Microsoft.AspNetCore.Mvc.OkObjectResult(
+            Jsd.Api.Models.Common.ApiResponse<object>.Fail(firstError));
+    };
+});
+
 var app = builder.Build();
+
+// ============================================================
+// 【阶段五】时区一致性校验：本项目 DATETIME 列按东八区写入，
+// 部署到非东八区服务器会让所有时间整体偏移（报表/对账/锁定全部算错）。
+// 启动即校验，不一致时打 Critical 日志（不阻断启动）。
+// ============================================================
+Jsd.Api.Helpers.TimeZoneGuard.Verify(
+    app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("TimeZoneGuard"),
+    app.Configuration);
 
 // ============================================================
 // HTTP 请求管道配置
@@ -425,6 +468,7 @@ app.UseCors("AllowAll");            // 跨域
 app.UseStaticFiles();               // 静态文件（wwwroot，上传的图片通过 /upload/... 访问，img 标签不带 JWT 故放行）
 app.UseAuthentication();            // 认证（先）
 app.UseMiddleware<TokenVersionMiddleware>();   // 密码版本校验：改密后旧 JWT 强制下线（系统管理模块）
+app.UseMiddleware<TokenBlacklistMiddleware>(); // F-22：登出拉黑的 Token 一律 401（签名合法 ≠ 会话有效）
 app.UseAuthorization();             // 授权（后）
 app.MapControllers();               // 映射控制器路由
 

@@ -1,4 +1,5 @@
 using Jsd.Api.Entities;
+using Jsd.Api.Exceptions;
 using Jsd.Api.Models.Common;
 using Jsd.Api.Models.Order;
 using Jsd.Api.Models.Price;
@@ -315,10 +316,10 @@ public class OrderService : IOrderService
         // 3) 生成订单号
         var orderNo = await GenerateOrderNoAsync();
 
-        // 4) 后端重算金额
+        // 4) 后端重算金额（F-31：主动校验，不再「归零」兜底）
         var totalAmount = items.Sum(i => i.SubtotalAmount);
-        var payAmount = totalAmount - dto.DiscountAmount + dto.FreightAmount;
-        if (payAmount < 0) payAmount = 0;   // 优惠大于总额时归零，避免出现负金额
+        var payAmount = ValidateOrderAmounts(
+            totalAmount, dto.DiscountAmount, dto.FreightAmount, forbidMemberDiscount: _currentUser.IsMember);
 
         // 5) 校验下单买家（会员）必须存在
         //
@@ -390,6 +391,11 @@ public class OrderService : IOrderService
             {
                 await _balanceService.FreezeForOrderAsync(
                     dto.BuyerId, payAmount, order.Id, $"下单冻结-{order.OrderNo}");
+
+                // 【阶段九】在订单上留痕"本单到底冻结了多少"。
+                // frozen_balance 是会员级共享池，没有这笔留痕，取消时只能拿应付金额去猜，
+                // 会误退别的订单的冻结额（详见 trx_order.frozen_amount 注释）。
+                order.FrozenAmount = payAmount;
             }
 
             // 8) 【价格快照】冻结下单瞬间的成交价与命中策略
@@ -521,6 +527,12 @@ public class OrderService : IOrderService
             return ApiResponse<object>.Fail("订单不存在", 404);
         }
 
+        // 【阶段六】归属校验：会员令牌只能支付自己的订单
+        if (!CanAccessOrder(order))
+        {
+            return ApiResponse<object>.Fail("无权操作该订单", 403);
+        }
+
         // 【状态校验】只有待付款才能支付
         if (order.OrderStatus != OrderStatuses.Pending)
         {
@@ -539,6 +551,19 @@ public class OrderService : IOrderService
         await using var tx = await _db.Database.BeginTransactionAsync();
         try
         {
+            // 【阶段八】余额支付：与 SubmitAsync 统一加锁顺序 —— 先锁会员余额行，再碰 SKU。
+            // 两条链路若顺序相反（一条 会员→SKU、一条 SKU→会员），并发时会在 InnoDB 里
+            // 互相等待对方的行锁而死锁（1213），只能靠数据库回滚一方，用户看到 500。
+            // 这里金额传 0 表示"只加锁、不校验额度"（冻结额在下面 DeductForOrderAsync 里校验）。
+            //
+            // ⚠️ 现状：OrderPayDto.PayMethod 带 [Range(1,3)]，余额支付(4) 在本接口会被直接拒绝，
+            //    因此下面这段分支目前不会命中——「余额支付」的唯一入口是 POST /order/submit。
+            //    保留它是为了将来放开 payMethod=4 时（例如让后台待付款单改用余额结账）不必再改这里。
+            if (order.PayAmount > 0 && dto.PayMethod == PayMethods.Balance)
+            {
+                await _balanceService.LockBalanceForPaymentAsync(order.BuyerId, 0m);
+            }
+
             // 逐条扣减库存（delta 为负数）
             foreach (var item in items)
             {
@@ -566,10 +591,21 @@ public class OrderService : IOrderService
             // ⚠️ 仅对「余额支付(4)」订单执行：银行转账/货到付款等线下待付款订单在下单时
             //    并未冻结余额（见 SubmitAsync 待付款分支），若强行走冻结划扣会因"冻结不足"抛异常，
             //    导致后台对线下订单点「支付」时失败。
-            if (order.PayAmount > 0 && order.PayMethod == PayMethods.Balance)
+            if (order.PayAmount > 0 && dto.PayMethod == PayMethods.Balance)
             {
-                await _balanceService.DeductForOrderAsync(
-                    order.BuyerId, order.PayAmount, order.Id, $"订单支付扣减-{order.OrderNo}");
+                // 【阶段九】按本单实际冻结额决定扣款来源（不再按会员冻结池猜测）：
+                //   本单有冻结 → 扣冻结额；本单没冻结（会员自助下单从不冻结）→ 直接扣可用余额。
+                if (order.FrozenAmount > 0)
+                {
+                    await _balanceService.DeductForOrderAsync(
+                        order.BuyerId, order.FrozenAmount, order.Id, $"订单支付扣减-{order.OrderNo}");
+                    order.FrozenAmount = 0m;   // 冻结已转为实际扣款，归零防重复
+                }
+                else
+                {
+                    await _balanceService.DeductDirectForOrderAsync(
+                        order.BuyerId, order.PayAmount, order.Id, $"订单支付扣减-{order.OrderNo}");
+                }
             }
 
             await _db.LogStockLogs.AddRangeAsync(logs);
@@ -630,6 +666,17 @@ public class OrderService : IOrderService
         if (order.PayMethod == PayMethods.Unpaid)
         {
             order.PayMethod = PayMethods.BankTransfer;
+        }
+
+        // 【阶段九】线下收款结清 → 本单冻结的余额必须释放回可用余额。
+        //   这笔钱是客户用银行转账/现金付的，会员余额里被冻结的那部分不该被"消费"；
+        //   不释放就会永久卡在 frozen_balance（原缺口：取消会解冻，正常收款反而不解冻）。
+        //   与订单状态推进同在调用方的核销事务里，任一失败整体回滚。
+        if (order.FrozenAmount > 0)
+        {
+            await _balanceService.UnfreezeForOrderAsync(
+                order.BuyerId, order.FrozenAmount, orderId, $"收款核销解冻-{order.OrderNo}");
+            order.FrozenAmount = 0m;
         }
 
         // 客户统计联动（累计消费 + 订单数 + 最近订单）
@@ -714,6 +761,12 @@ public class OrderService : IOrderService
             return ApiResponse<object>.Fail("订单不存在", 404);
         }
 
+        // 【阶段六】归属校验：会员令牌只能确认自己的订单收货
+        if (!CanAccessOrder(order))
+        {
+            return ApiResponse<object>.Fail("无权操作该订单", 403);
+        }
+
         // 【状态校验】只有已发货才能确认完成
         if (order.OrderStatus != OrderStatuses.Shipped)
         {
@@ -777,6 +830,12 @@ public class OrderService : IOrderService
             return ApiResponse<object>.Fail("订单不存在", 404);
         }
 
+        // 【阶段六】归属校验：会员令牌只能关闭自己的订单（否则可恶意取消他人订单）
+        if (!CanAccessOrder(order))
+        {
+            return ApiResponse<object>.Fail("无权操作该订单", 403);
+        }
+
         if (order.OrderStatus != OrderStatuses.Pending)
         {
             return ApiResponse<object>.Fail("仅待付款订单可关闭（当前状态：" + OrderStatuses.GetName(order.OrderStatus) + "）");
@@ -789,11 +848,24 @@ public class OrderService : IOrderService
             order.CloseReason = dto.CloseReason ?? string.Empty;
             order.CloseTime = DateTime.Now;
 
-            // 解冻退回（金额以实际冻结额为上限，已扣减的部分不会重复退回）
-            if (order.PayAmount > 0)
+            // ============================================================
+            // 【阶段九·用户选项 A】关闭订单必须**无条件**解冻本单资金
+            //
+            //   冻结金额取 order.FrozenAmount（本单冻结时留的痕），不再用应付金额去猜：
+            //   frozen_balance 是会员级共享池，若用 min(应付, 池子) 释放，
+            //   取消一张【从未冻结】的单会把【别的单】的冻结额退掉。
+            //
+            //   与「订单状态改为已关闭」在**同一个事务**里：
+            //   任一步失败 → 整体回滚（订单仍是待付款、钱仍冻着），
+            //   绝不会出现「订单关了、钱没退」或「钱退了、订单还开着」。
+            // ============================================================
+            if (order.FrozenAmount > 0)
             {
                 await _balanceService.UnfreezeForOrderAsync(
-                    order.BuyerId, order.PayAmount, order.Id, $"订单关闭解冻-{order.OrderNo}");
+                    order.BuyerId, order.FrozenAmount, order.Id, $"订单关闭解冻-{order.OrderNo}");
+
+                // 释放后立即归零：同一订单无论重复取消还是后续支付，都不会二次释放
+                order.FrozenAmount = 0m;
             }
 
             await _orderRepository.SaveChangesAsync();
@@ -841,10 +913,21 @@ public class OrderService : IOrderService
             .Where(s => skuIds.Contains(s.Id))
             .ToDictionaryAsync(s => s.Id, s => s.Stock);
 
+        var totalAmount = items.Sum(i => i.SubtotalAmount);
+
+        // ===== F-31：预计算同样必须拦截「优惠 > 总额」=====
+        // 否则确认页会直接渲染出 0 元应付，用户点提交即触发 0 元下单。
+        var discount = dto.DiscountAmount;
+        var freight = dto.FreightAmount;
+        var payAmount = ValidateOrderAmounts(
+            totalAmount, discount, freight, forbidMemberDiscount: _currentUser.IsMember);
+
         var result = new OrderPreCalculateResultDto
         {
-            DiscountAmount = dto.DiscountAmount < 0 ? 0 : dto.DiscountAmount,
-            FreightAmount = dto.FreightAmount < 0 ? 0 : dto.FreightAmount
+            TotalAmount = totalAmount,
+            DiscountAmount = discount,
+            FreightAmount = freight,
+            PayAmount = payAmount
         };
 
         var allStockOk = true;
@@ -873,9 +956,8 @@ public class OrderService : IOrderService
             });
         }
 
-        result.TotalAmount = items.Sum(i => i.SubtotalAmount);
-        result.PayAmount = result.TotalAmount - result.DiscountAmount + result.FreightAmount;
-        if (result.PayAmount < 0) result.PayAmount = 0;
+        // TotalAmount / DiscountAmount / FreightAmount / PayAmount 已在构建 result 时统一校验并赋值，
+        // 此处不再重算，彻底移除「payAmount < 0 就归零」的被动兜底。
         result.StockOk = allStockOk;
 
         return ApiResponse<OrderPreCalculateResultDto>.Success(result);
@@ -982,19 +1064,45 @@ public class OrderService : IOrderService
         }
 
         var totalAmount = items.Sum(i => i.SubtotalAmount);
-        var discount = dto.DiscountAmount < 0 ? 0 : dto.DiscountAmount;
-        var freight = dto.FreightAmount < 0 ? 0 : dto.FreightAmount;
-        var payAmount = totalAmount - discount + freight;
-        if (payAmount < 0) payAmount = 0;
+
+        // ===== F-31【主动校验】替代原先「先算再归零」的被动防御 =====
+        // 优惠金额是前端唯一可自由传入的金额（单价由价格引擎重算，优惠没有），
+        // 必须用【服务端自算的 totalAmount】裁决上限；否则可被放大到总额之上，
+        // 把应付压成 0，却仍然扣库存 / 置已支付 / 结清应收 → 0 元拿货。
+        var discount = dto.DiscountAmount;
+        var freight = dto.FreightAmount;
+        var payAmount = ValidateOrderAmounts(
+            totalAmount, discount, freight, forbidMemberDiscount: _currentUser.IsMember);
 
         var orderNo = await GenerateOrderNoAsync();
         var logs = new List<LogStockLog>();
         var stockCache = new Dictionary<long, int>();
 
+        // 余额支付（4）= 提交即扣款；其余（银行转账/货到付款）生成待付款订单
+        var isInstantPay = dto.PayMethod == PayMethods.Balance;
+
         // ---------- 3)~7) 单事务 ----------
         await using var tx = await _db.Database.BeginTransactionAsync();
         try
         {
+            // ============================================================
+            // ①【阶段八】余额支付：事务内第一步锁定余额行并校验充足性
+            //
+            // 【为什么放最前】
+            //   顺序：锁余额 → 建订单 → 扣库存 → 扣余额 → 置已支付。
+            //   余额不足时在这里就抛出，不会白建订单/白扣库存/白写价格快照，
+            //   也就不会为了一个注定失败的单去占着 SKU 行锁。
+            //
+            // 【为什么必须显式加锁】
+            //   同一会员并发提交两单时，两个事务若都"读余额→判断够→各自扣"，
+            //   就会花掉不存在的钱（超扣）。SELECT ... FOR UPDATE 让同一会员的
+            //   余额支付串行化，锁随本事务提交/回滚释放。
+            // ============================================================
+            if (isInstantPay && payAmount > 0)
+            {
+                await _balanceService.LockBalanceForPaymentAsync(buyerId, payAmount);
+            }
+
             var order = new TrxOrder
             {
                 OrderNo = orderNo,
@@ -1037,7 +1145,6 @@ public class OrderService : IOrderService
             //                        等后台录入收款单 → 执行核销 → 应收结清时
             //                        由 MarkPaidFromWriteOffAsync 扣库存并转「已支付」。
             // ============================================================
-            var isInstantPay = dto.PayMethod == PayMethods.Balance;
 
             // 价格快照（历史价格追溯）：两种方式都要留档
             await SavePriceSnapshotsAsync(order.Id, items, quotation);
@@ -1377,6 +1484,77 @@ public class OrderService : IOrderService
     }
 
     /// <summary>
+    /// 【阶段六】订单归属判定：会员令牌只能操作 BuyerId == 自己 的订单；管理员令牌（无 member_id）不受限。
+    ///
+    /// 用于支付 / 取消 / 确认收货这类"按 id 直接操作"的入口 —— 这些方法原先只按 id 取单，
+    /// 会员改个 id 就能操作别人的订单（越权取消、越权支付）。
+    /// 注意：本方法只做归属判断，不替代状态机校验。
+    /// </summary>
+    private bool CanAccessOrder(TrxOrder order)
+        => !_currentUser.IsMember || order.BuyerId == _currentUser.MemberId;
+
+    /// <summary>
+    /// 【F-31 资损修复】订单金额主动校验：计算实付金额前先裁决参数合法性，非法直接抛业务异常。
+    ///
+    /// 背景：原实现为 `payAmount = total - discount + freight; if (payAmount &lt; 0) payAmount = 0;`，
+    /// 属"先算完再被动归零"——前端把 discountAmount 放大到总额之上即可得到 0 元应付，
+    /// 而订单仍会扣库存、置已支付、结清应收，造成 0 元拿货。
+    ///
+    /// 现在的规则（任一不满足即拒绝）：
+    ///   1. 优惠金额不能为负；
+    ///   2. 运费不能为负；
+    ///   3. **优惠金额不得大于服务端重算的商品总价**（核心，杜绝 0 元单）；
+    ///   4. 会员自助下单不允许非 0 优惠（改价必须走后台，需管理员权限）；
+    ///   5. 会员自助下单实付金额必须 &gt; 0（后台代下单允许全额优惠的赠品单）。
+    /// </summary>
+    /// <param name="totalAmount">服务端价格引擎重算出的商品总价（权威值，不采信前端）</param>
+    /// <param name="discount">前端传入的优惠金额</param>
+    /// <param name="freight">前端传入的运费</param>
+    /// <param name="forbidMemberDiscount">true=会员自助下单（禁止非 0 优惠）；false=后台代下单</param>
+    /// <returns>校验通过的实付金额（已四舍五入到分）</returns>
+    /// <exception cref="BusinessException">金额不合法时抛出，由 Controller 统一转成 ApiResponse.Fail</exception>
+    private decimal ValidateOrderAmounts(
+        decimal totalAmount, decimal discount, decimal freight, bool forbidMemberDiscount)
+    {
+        if (discount < 0)
+        {
+            throw new BusinessException("优惠金额不能为负数");
+        }
+        if (freight < 0)
+        {
+            throw new BusinessException("运费金额不能为负数");
+        }
+
+        // ★ 核心校验：优惠不得超过服务端重算的商品总价
+        if (discount > totalAmount)
+        {
+            throw new BusinessException("优惠金额不能大于商品总价！");
+        }
+
+        // 会员自助下单不允许改价（否则 discount == total 仍可构造 0 元单）
+        if (forbidMemberDiscount && discount > 0)
+        {
+            throw new BusinessException("会员自助下单不支持优惠金额，如需改价请联系客服");
+        }
+
+        var payAmount = decimal.Round(totalAmount - discount + freight, 2, MidpointRounding.AwayFromZero);
+
+        // 理论上 discount ≤ total 已保证 payAmount ≥ 0，这里再兜一层防浮点/四舍五入异常
+        if (payAmount < 0)
+        {
+            throw new BusinessException("应付金额不能为负数，请检查优惠金额与运费");
+        }
+
+        // 会员自助下单必须真实付款（>0）；后台代下单允许"全额优惠/赠品单"（payAmount=0）
+        if (forbidMemberDiscount && payAmount <= 0)
+        {
+            throw new BusinessException("应付金额必须大于 0，请检查优惠金额与运费");
+        }
+
+        return payAmount;
+    }
+
+    /// <summary>
     /// 【乐观锁 CAS】扣减 SKU 库存并写变动日志。
     /// 采用比较并交换：UPDATE prod_sku SET stock=@after WHERE id=@id AND stock=@current，
     /// 受影响行数=0 说明被其他请求并发修改，重新读取最新库存后重试（最多 MaxCasRetry 次）。
@@ -1538,14 +1716,16 @@ public class OrderService : IOrderService
     /// </summary>
     private async Task UpdateMemberOnPaidAsync(long buyerId, decimal payAmount, string orderNo)
     {
-        var member = await _db.MemMembers
-            .FirstOrDefaultAsync(m => m.Id == buyerId && m.IsDeleted == 0);
-        if (member == null) return;   // 客户不存在则跳过联动
-
-        member.TotalConsumption += payAmount;
-        member.OrderCount += 1;
-        member.LastOrderNo = orderNo;
-        member.LastOrderTime = DateTime.Now;
+        // 【阶段八】改为数据库侧原子自增，不再"查实体 → C# 加 → SaveChanges"：
+        //   1) 同一会员并发支付多单时，读改写会丢更新（两次 +10 只记 10）；
+        //   2) 这里刻意不加载实体，避免把余额等字段带进 UPDATE（余额由实时扣减维护）。
+        await _db.MemMembers
+            .Where(m => m.Id == buyerId && m.IsDeleted == 0)
+            .ExecuteUpdateAsync(s => s
+                .SetProperty(m => m.TotalConsumption, m => m.TotalConsumption + payAmount)
+                .SetProperty(m => m.OrderCount, m => m.OrderCount + 1)
+                .SetProperty(m => m.LastOrderNo, orderNo)
+                .SetProperty(m => m.LastOrderTime, DateTime.Now));
     }
 
     /// <summary>
@@ -1553,10 +1733,9 @@ public class OrderService : IOrderService
     /// </summary>
     private async Task UpdateMemberOnCompletedAsync(long buyerId)
     {
-        var member = await _db.MemMembers
-            .FirstOrDefaultAsync(m => m.Id == buyerId && m.IsDeleted == 0);
-        if (member == null) return;
-
-        member.CompletedOrderCount += 1;
+        await _db.MemMembers
+            .Where(m => m.Id == buyerId && m.IsDeleted == 0)
+            .ExecuteUpdateAsync(s => s.SetProperty(
+                m => m.CompletedOrderCount, m => m.CompletedOrderCount + 1));
     }
 }

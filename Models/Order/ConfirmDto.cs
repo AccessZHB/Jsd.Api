@@ -102,7 +102,16 @@ public class OrderSubmitItemDto
 }
 
 /// <summary>订单预计算入参（POST /api/order/pre-calculate；确认页初始化用）</summary>
-public class OrderPreCalculateDto
+/// <summary>
+/// 订单预计算入参（POST /api/order/pre-calculate）
+///
+/// 【金额安全 F-31】优惠/运费是前端传入的**唯一**金额入参（单价由后端价格引擎重算），
+/// 因此必须做边界校验，绝不能让"优惠大于总额"通过 —— 否则确认页会显示 0 元，
+/// 用户随后提交即可 0 元拿货。校验分两层：
+///   1) 本 DTO 的 IValidatableObject：非负、绝对上限、以及与前端回传的 TotalAmount 自检；
+///   2) OrderService.PreCalculateAsync：以**服务端自算的 totalAmount** 为准做最终裁决（权威）。
+/// </summary>
+public class OrderPreCalculateDto : IValidatableObject
 {
     /// <summary>订单明细</summary>
     [Required(ErrorMessage = "订单明细不能为空")]
@@ -116,6 +125,73 @@ public class OrderPreCalculateDto
     /// <summary>运费（可选，默认 0）</summary>
     [Range(0, double.MaxValue, ErrorMessage = "运费金额不能为负数")]
     public decimal FreightAmount { get; set; }
+
+    /// <summary>
+    /// 商品总价（可选，仅用于前端自检/前置校验）。
+    /// ⚠️ 服务端**不信任**此字段的绝对值，最终以价格引擎重算的总额为准。
+    /// </summary>
+    public decimal? TotalAmount { get; set; }
+
+    /// <inheritdoc />
+    public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
+    {
+        foreach (var error in MoneyValidation.ValidateAmounts(
+                     DiscountAmount, FreightAmount, TotalAmount, nameof(DiscountAmount), nameof(FreightAmount)))
+        {
+            yield return error;
+        }
+    }
+}
+
+/// <summary>
+/// 订单金额入参的公共校验规则。
+///
+/// 【背景 · F-31 资损漏洞】原实现只做 `if (payAmount &lt; 0) payAmount = 0;` 的被动归零，
+/// 前端传入 `discountAmount = 999999` 即可把应付金额压成 0，而服务端仍会扣库存、置已支付、结清应收 → 0 元拿货。
+/// 现在改为：DTO 层拦截明显非法值，Service 层用**服务端自算总额**做最终裁决（见 OrderService）。
+/// </summary>
+internal static class MoneyValidation
+{
+    /// <summary>单笔优惠/运费的绝对上限（业务兜底，防误填与数值溢出）</summary>
+    public const decimal MaxAmount = 1_000_000m;
+
+    /// <summary>
+    /// 校验优惠与运费金额。
+    /// </summary>
+    /// <param name="discount">优惠金额</param>
+    /// <param name="freight">运费</param>
+    /// <param name="totalAmount">商品总价（前端回传，可为空；非空且 &gt;0 时做交叉校验）</param>
+    /// <param name="discountMember">优惠字段名（用于把错误挂到具体字段）</param>
+    /// <param name="freightMember">运费字段名</param>
+    public static IEnumerable<ValidationResult> ValidateAmounts(
+        decimal discount, decimal freight, decimal? totalAmount, string discountMember, string freightMember)
+    {
+        if (discount < 0)
+        {
+            yield return new ValidationResult("优惠金额不能为负数", new[] { discountMember });
+        }
+        if (freight < 0)
+        {
+            yield return new ValidationResult("运费金额不能为负数", new[] { freightMember });
+        }
+        if (discount > MaxAmount)
+        {
+            yield return new ValidationResult(
+                $"优惠金额超出允许上限（单笔不超过 {MaxAmount:0.##} 元）", new[] { discountMember });
+        }
+        if (freight > MaxAmount)
+        {
+            yield return new ValidationResult(
+                $"运费金额超出允许上限（单笔不超过 {MaxAmount:0.##} 元）", new[] { freightMember });
+        }
+        // 交叉校验：仅当调用方提供了总价时生效（最终仍以服务端重算总额为准）
+        if (totalAmount is > 0 && discount > totalAmount.Value)
+        {
+            yield return new ValidationResult(
+                $"优惠金额（{discount:0.##}）不能大于商品总价（{totalAmount.Value:0.##}）",
+                new[] { discountMember });
+        }
+    }
 }
 
 /// <summary>预计算明细行</summary>
@@ -154,7 +230,7 @@ public class OrderPreCalculateResultDto
 }
 
 /// <summary>订单提交入参（POST /api/order/submit；单事务：库存校验 → 建单 → 余额直扣 → 置已支付）</summary>
-public class OrderSubmitDto
+public class OrderSubmitDto : IValidatableObject
 {
     /// <summary>已保存地址ID（&gt;0 时从 mem_member_address 读取收货信息，并校验归属当前会员）</summary>
     public long AddressId { get; set; }
@@ -177,6 +253,12 @@ public class OrderSubmitDto
     [Range(0, double.MaxValue, ErrorMessage = "运费金额不能为负数")]
     public decimal FreightAmount { get; set; }
 
+    /// <summary>
+    /// 商品总价（可选，仅用于前端自检/前置校验）。
+    /// ⚠️ 服务端**不信任**此字段，最终校验一律以价格引擎重算的总额为准（见 OrderService.SubmitAsync）。
+    /// </summary>
+    public decimal? TotalAmount { get; set; }
+
     /// <summary>买家备注</summary>
     [StringLength(500)]
     public string? Remark { get; set; }
@@ -194,6 +276,16 @@ public class OrderSubmitDto
     [Required(ErrorMessage = "订单明细不能为空")]
     [MinLength(1, ErrorMessage = "订单明细至少需要一条")]
     public List<OrderSubmitItemDto> Items { get; set; } = new();
+
+    /// <inheritdoc />
+    public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
+    {
+        foreach (var error in MoneyValidation.ValidateAmounts(
+                     DiscountAmount, FreightAmount, TotalAmount, nameof(DiscountAmount), nameof(FreightAmount)))
+        {
+            yield return error;
+        }
+    }
 }
 
 /// <summary>订单提交结果</summary>
