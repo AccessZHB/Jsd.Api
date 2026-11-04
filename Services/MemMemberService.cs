@@ -1,7 +1,9 @@
 using BCrypt.Net;
 using Jsd.Api.Entities;
+using Jsd.Api.Exceptions;
 using Jsd.Api.Models.Common;
 using Jsd.Api.Models.Customer;
+using Jsd.Api.Models.System;
 using Jsd.Api.Repositories;
 using Microsoft.EntityFrameworkCore;
 
@@ -29,12 +31,21 @@ public class MemMemberService : IMemMemberService
     private readonly IMemMemberRepository _repository;
     private readonly JwtService _jwtService;
     private readonly AppDbContext _db;
+    private readonly ISecurityService _securityService;
+    private readonly IConfiguration _configuration;
 
-    public MemMemberService(IMemMemberRepository repository, JwtService jwtService, AppDbContext db)
+    public MemMemberService(
+        IMemMemberRepository repository,
+        JwtService jwtService,
+        AppDbContext db,
+        ISecurityService securityService,
+        IConfiguration configuration)
     {
         _repository = repository;
         _jwtService = jwtService;   // 单例，用于签发小程序会员令牌
         _db = db;                   // 用于关联查询【客户等级】表（mem_member_level）动态取等级名与默认折扣
+        _securityService = securityService;   // F-25：复用现有图形验证码服务（SVG + 一次性校验）
+        _configuration = configuration;       // F-25：读取 Security:MemberLogin 安全策略
     }
 
     // ============================================================
@@ -380,27 +391,121 @@ public class MemMemberService : IMemMemberService
     public async Task<ApiResponse<MemberLoginResultDto>> LoginAsync(MemberLoginDto dto)
     {
         var userName = (dto.UserName ?? string.Empty).Trim();
+        var policy = LoadMemberLoginPolicy();
+        var now = DateTime.Now;
 
-        // 1. 按登录账号查会员（不存在/已删除统一提示，避免账号枚举）
+        // ============================================================
+        // ①【阶段四】锁定检查 —— 全流程最先执行，直接查库（多实例共享）
+        //
+        // 一旦命中锁定，直接抛业务异常终止：不校验验证码、不读明细、更**不进 BCrypt**。
+        // 这是防 CPU DoS 的关键：BCrypt 是故意设计成慢速的重计算，
+        // 若锁定期内还允许进来跑一次哈希，攻击者依然能把 CPU 打满。
+        //
+        // 只取 lock_until 一列（轻量查询），命中才抛；未锁定则继续走验证码。
+        // ============================================================
+        var lockUntil = await _db.MemMembers.AsNoTracking()
+            .Where(m => m.UserName == userName && m.IsDeleted == 0)
+            .Select(m => m.LockUntil)
+            .FirstOrDefaultAsync();
+
+        if (lockUntil.HasValue && lockUntil.Value > now)
+        {
+            throw new BusinessException(
+                $"该账号已被锁定，请在 {lockUntil.Value:HH:mm} 后重试");
+        }
+
+        // ② 【F-25】图形验证码 —— 失败立即返回，绝不进入密码比对逻辑。
+        //    VerifyCaptchaAsync 内部会在校验后**立即销毁**验证码（一次性，防重放）。
+        var captchaOk = await _securityService.VerifyCaptchaAsync(
+            dto.CaptchaKey,
+            dto.CaptchaCode,
+            new SecurityConfigDto { CaptchaEnabled = policy.CaptchaEnabled });
+
+        if (!captchaOk)
+        {
+            return ApiResponse<MemberLoginResultDto>.Fail("验证码错误或已过期，请刷新后重试", 400);
+        }
+
+        // ② 按登录账号查会员（不存在/已删除统一提示，避免账号枚举）
         var member = await _repository.GetByUserNameAsync(userName);
         if (member == null || member.IsDeleted == 1)
         {
             return ApiResponse<MemberLoginResultDto>.Fail("账号或密码错误", 401);
         }
 
-        // 2. BCrypt 校验密码（库里存的是密文）
-        if (!BCrypt.Net.BCrypt.Verify(dto.Password, member.Password))
+        // ③ BCrypt 校验密码（库里存的是密文）
+        //    防御：存量数据可能存在空口令/非法哈希，BCrypt.Verify 会抛 ArgumentException，
+        //    这里统一按"密码错误"处理，绝不让安全校验失败变成 500。
+        var passwordMatched = false;
+        if (!string.IsNullOrWhiteSpace(member.Password))
         {
+            try
+            {
+                passwordMatched = BCrypt.Net.BCrypt.Verify(dto.Password, member.Password);
+            }
+            catch (ArgumentException)
+            {
+                passwordMatched = false;   // 哈希损坏/格式非法 → 视为不匹配
+            }
+        }
+
+        if (!passwordMatched)
+        {
+            // ============================================================
+            // ④【阶段四】失败累加 → 触发锁定（全部走数据库，原子更新）
+            //
+            // 关键：用 ExecuteUpdateAsync 在数据库侧做 `fail_count = fail_count + 1`，
+            // 而不是"读出来 +1 再存回去"。后者在并发下会丢失更新
+            // （两个请求同时读到 3，都写 4，实际应为 5），导致永远达不到锁定阈值。
+            //
+            // ⚠️ 这里**绝不能**再走 _repository.Update(member) + SaveChanges()：
+            //    那会把实体上过期的 FailCount 写回去，覆盖掉原子自增的结果。
+            // ============================================================
+            await _db.MemMembers
+                .Where(m => m.Id == member.Id)
+                .ExecuteUpdateAsync(s => s.SetProperty(m => m.FailCount, m => m.FailCount + 1));
+
+            // 读回最新计数，判断是否达到阈值
+            var failCount = await _db.MemMembers.AsNoTracking()
+                .Where(m => m.Id == member.Id)
+                .Select(m => m.FailCount)
+                .FirstAsync();
+
+            if (failCount >= policy.MaxLoginAttempts)
+            {
+                // 上锁 + 计数清零（解锁后重新获得完整次数）
+                // 条件更新（FailCount >= 阈值）保证并发下也只会被设置一次，不会来回覆盖
+                var newLockUntil = now.AddMinutes(policy.LockDurationMinutes);
+                await _db.MemMembers
+                    .Where(m => m.Id == member.Id && m.FailCount >= policy.MaxLoginAttempts)
+                    .ExecuteUpdateAsync(s => s
+                        .SetProperty(m => m.LockUntil, newLockUntil)
+                        .SetProperty(m => m.FailCount, 0));
+            }
+
+            // 本次失败仍如实返回"账号或密码错误"（本次确实是密码错）；
+            // 锁定在下一次访问时由第 ① 步拦截并提示"该账号已被锁定，请在 HH:mm 后重试"。
             return ApiResponse<MemberLoginResultDto>.Fail("账号或密码错误", 401);
         }
 
-        // 3. 状态校验：0-禁用 不允许登录
+        // ========== ⑤【阶段四】登录成功：必须立刻清零失败计数 ==========
+        // 否则用户改了密码 / 输错几次后再输对，仍会被残留计数拖入锁定。
+        if (member.FailCount != 0 || member.LockUntil != null)
+        {
+            await _db.MemMembers
+                .Where(m => m.Id == member.Id)
+                .ExecuteUpdateAsync(s => s
+                    .SetProperty(m => m.FailCount, 0)
+                    .SetProperty(m => m.LockUntil, (DateTime?)null));
+        }
+
+        // 5. 状态校验：0-禁用 不允许登录
         if (member.Status != 1)
         {
             return ApiResponse<MemberLoginResultDto>.Fail("账号已禁用，请联系客服", 403);
         }
 
-        // 5. 等级名称 + 折扣率：由【客户等级】表动态带出（客户表不再存等级枚举与折扣率）
+        // 6. 等级名称 + 折扣率：由【客户等级】表动态带出（客户表不再存等级枚举与折扣率）
         var levelName = "未分级";
         decimal discountRate = 1.00m;
         if (member.CustomerLevelId.HasValue)
@@ -414,7 +519,7 @@ public class MemMemberService : IMemMemberService
             }
         }
 
-        // 6. 签发会员令牌（带 user_type=member，与管理员令牌区分）
+        // 7. 签发会员令牌（带 user_type=member，与管理员令牌区分）
         var (token, expiresIn) = _jwtService.GenerateMemberToken(member);
 
         return ApiResponse<MemberLoginResultDto>.Success(new MemberLoginResultDto
@@ -430,6 +535,24 @@ public class MemMemberService : IMemMemberService
             DiscountRate = discountRate,
             Balance = member.Balance
         });
+    }
+
+    /// <summary>
+    /// 读取会员登录安全策略（appsettings: Security:MemberLogin）。
+    /// 缺省值：验证码开启、5 次失败、锁定 30 分钟。
+    /// </summary>
+    private (bool CaptchaEnabled, int MaxLoginAttempts, int LockDurationMinutes) LoadMemberLoginPolicy()
+    {
+        var section = _configuration.GetSection("Security:MemberLogin");
+
+        var captchaEnabled = section.GetValue("CaptchaEnabled", true);
+        var maxAttempts = section.GetValue("MaxLoginAttempts", 5);
+        var lockMinutes = section.GetValue("LockDurationMinutes", 30);
+
+        if (maxAttempts < 1) maxAttempts = 5;
+        if (lockMinutes < 1) lockMinutes = 30;
+
+        return (captchaEnabled, maxAttempts, lockMinutes);
     }
 
     // ============================================================

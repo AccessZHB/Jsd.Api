@@ -14,6 +14,15 @@ public class MemberLoginDto
     /// <summary>登录密码（明文传输，服务端用 BCrypt 校验；生产环境建议 HTTPS）</summary>
     [Required(ErrorMessage = "密码不能为空")]
     public string Password { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 【F-25】图形验证码标识（由 POST /api/member/captcha 返回）。
+    /// 安全策略开启验证码时必传，校验通过后立即作废（一次性，防重放爆破）。
+    /// </summary>
+    public string? CaptchaKey { get; set; }
+
+    /// <summary>【F-25】图形验证码内容（用户输入，忽略大小写）</summary>
+    public string? CaptchaCode { get; set; }
 }
 
 /// <summary>

@@ -152,6 +152,19 @@ public class MemMember
     [Column("is_deleted")]
     public int IsDeleted { get; set; } = 0;
 
+    /// <summary>
+    /// 【F-25】连续登录失败次数（登录成功后清零）。
+    /// 达到策略阈值后写入 lock_until，期间拒绝登录，防止撞库暴力破解。
+    /// </summary>
+    [Column("fail_count")]
+    public int FailCount { get; set; }
+
+    /// <summary>
+    /// 【F-25】账号锁定截止时间。为空表示未锁定；锁定期间禁止登录。
+    /// </summary>
+    [Column("lock_until")]
+    public DateTime? LockUntil { get; set; }
+
     /// <summary>创建时间（数据库自动生成）</summary>
     [Column("create_time")]
     [DatabaseGenerated(DatabaseGeneratedOption.Identity)]

@@ -20,11 +20,16 @@ public class AuthController : ControllerBase
 {
     private readonly IAuthService _authService;
     private readonly ISecurityService _securityService;
+    private readonly ITokenBlacklistService _tokenBlacklist;
 
-    public AuthController(IAuthService authService, ISecurityService securityService)
+    public AuthController(
+        IAuthService authService,
+        ISecurityService securityService,
+        ITokenBlacklistService tokenBlacklist)
     {
         _authService = authService;
         _securityService = securityService;
+        _tokenBlacklist = tokenBlacklist;
     }
 
     /// <summary>
@@ -35,6 +40,7 @@ public class AuthController : ControllerBase
     /// </summary>
     [HttpPost("login")]
     [AllowAnonymous]  // 登录接口不需要 Token
+    [ReplayAttack]    // 阶段五：防重放（X-Nonce / X-Timestamp，±60s，Nonce 记忆 2 分钟）
     public async Task<ApiResponse<LoginResultDto>> Login([FromBody] LoginDto dto)
     {
         // 获取客户端IP与UA，用于登录日志与最后登录记录
@@ -87,12 +93,30 @@ public class AuthController : ControllerBase
     }
 
     /// <summary>
-    /// 登出（JWT 无状态，前端清除本地 Token 即可；此接口保留用于日志/后续黑名单扩展）
+    /// 登出（F-22）：把当前请求头里的 Token 加入黑名单，立即失效。
+    ///
+    /// 说明：JWT 无状态，仅靠前端删除本地 Token 无法阻止他人复用；
+    /// 这里按 Token 的**剩余有效期**写入黑名单（Redis / 内存），
+    /// 由 TokenBlacklistMiddleware 在每个请求上拦截。
     /// </summary>
     [HttpPost("logout")]
     [Authorize]
-    public ApiResponse<object> Logout()
+    public async Task<ApiResponse<object>> Logout()
     {
-        return ApiResponse<object>.Success(new { }, "登出成功");
+        var token = Helpers.BearerTokenHelper.ReadToken(HttpContext);
+        if (string.IsNullOrEmpty(token))
+        {
+            // 理论上 [Authorize] 已保证有 Token；这里只做防御性返回，不抛 500
+            return ApiResponse<object>.Fail("未获取到登录令牌", 401);
+        }
+
+        var expiresAt = Helpers.BearerTokenHelper.ReadExpiry(token);
+        if (expiresAt is null)
+        {
+            return ApiResponse<object>.Fail("登录令牌无效", 401);
+        }
+
+        await _tokenBlacklist.RevokeAsync(token, expiresAt.Value);
+        return ApiResponse<object>.Success(new { }, "登出成功，令牌已失效");
     }
 }
