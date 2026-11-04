@@ -1,3 +1,4 @@
+using Jsd.Api.Attributes;
 using Jsd.Api.Models.Common;
 using Jsd.Api.Models.Order;
 using Jsd.Api.Services;
@@ -55,6 +56,7 @@ public class OrderController : ControllerBase
     /// <param name="page">页码，默认1</param>
     /// <param name="pageSize">每页条数，默认10</param>
     [HttpGet("page")]
+    [Permission(OrderPermissions.List)]
     [ProducesResponseType(typeof(ApiResponse<PagedResult<OrderListDto>>), StatusCodes.Status200OK)]
     public async Task<ApiResponse<PagedResult<OrderListDto>>> GetPage(
         [FromQuery] string? orderNo,
@@ -119,6 +121,7 @@ public class OrderController : ControllerBase
     /// </summary>
     /// <param name="id">订单ID</param>
     [HttpGet("{id:long}/detail")]
+    [Permission(OrderPermissions.Detail)]
     [ProducesResponseType(typeof(ApiResponse<OrderDetailDto>), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ApiResponse<OrderDetailDto>), StatusCodes.Status404NotFound)]
     public async Task<ApiResponse<OrderDetailDto>> GetDetail(long id)
@@ -138,6 +141,7 @@ public class OrderController : ControllerBase
     /// </summary>
     /// <param name="id">订单ID</param>
     [HttpPut("{id:long}/remark")]
+    [Permission(OrderPermissions.Remark)]
     [ProducesResponseType(typeof(ApiResponse<object>), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ApiResponse<object>), StatusCodes.Status400BadRequest)]
     [ProducesResponseType(typeof(ApiResponse<object>), StatusCodes.Status404NotFound)]
@@ -157,6 +161,7 @@ public class OrderController : ControllerBase
     /// </summary>
     /// <param name="id">订单ID</param>
     [HttpPut("{id:long}/ship")]
+    [Permission(OrderPermissions.Ship)]
     [ProducesResponseType(typeof(ApiResponse<object>), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ApiResponse<object>), StatusCodes.Status400BadRequest)]
     [ProducesResponseType(typeof(ApiResponse<object>), StatusCodes.Status404NotFound)]
@@ -176,6 +181,7 @@ public class OrderController : ControllerBase
     /// 示例：GET /api/order/export?orderStatus=3&amp;startTime=2026-09-01
     /// </summary>
     [HttpGet("export")]
+    [Permission(OrderPermissions.Export)]
     [ProducesResponseType(typeof(ApiResponse<OrderExportDto>), StatusCodes.Status200OK)]
     public async Task<ApiResponse<OrderExportDto>> Export(
         [FromQuery] string? orderNo,
@@ -255,6 +261,7 @@ public class OrderController : ControllerBase
     /// 已支付订单需走退款流程，本接口不处理。
     /// </summary>
     [HttpPut("{id:long}/cancel")]
+    [Permission(OrderPermissions.Cancel)]
     [ProducesResponseType(typeof(ApiResponse<object>), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ApiResponse<object>), StatusCodes.Status400BadRequest)]
     [ProducesResponseType(typeof(ApiResponse<object>), StatusCodes.Status404NotFound)]
@@ -300,6 +307,7 @@ public class OrderController : ControllerBase
     ///   body: { "addressId": 12, "items": [{ "skuId": 1, "quantity": 2, "specJson": "...", "processingStatus": "unprocessed" }] }
     /// </summary>
     [HttpPost("submit")]
+    [ReplayAttack]    // 阶段五：下单即支付（余额直扣），属高危资金接口，需防重放
     [ProducesResponseType(typeof(ApiResponse<OrderSubmitResultDto>), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ApiResponse<OrderSubmitResultDto>), StatusCodes.Status400BadRequest)]
     [ProducesResponseType(typeof(ApiResponse<OrderSubmitResultDto>), StatusCodes.Status401Unauthorized)]
