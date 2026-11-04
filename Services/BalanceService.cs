@@ -1,12 +1,14 @@
 using AutoMapper;
 using FluentValidation;
 using Jsd.Api.Entities;
+using Jsd.Api.Exceptions;
 using Jsd.Api.Models.Common;
 using Jsd.Api.Models.Price;
 using Jsd.Api.Models.Wallet;
 using Jsd.Api.Repositories;
 using Jsd.Api.Validators;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 
 namespace Jsd.Api.Services;
 
@@ -856,35 +858,32 @@ public class BalanceService : IBalanceService
             return;
         }
 
-        var member = await RequireMemberAsync(memMemberId);
+        // 【阶段八】行锁 + 数据库侧原子转移：balance - amt、frozen + amt 在同一条 UPDATE 里完成，
+        // 不存在"读到旧余额再写回"的丢失更新窗口。
+        var (before, _) = await LockMemberBalanceRowAsync(memMemberId);
 
-        for (var attempt = 0; attempt < MaxCasRetry; attempt++)
+        if (before < amt)
         {
-            var before = member.Balance;
-            var beforeFrozen = member.FrozenBalance;
-
-            if (before < amt)
-            {
-                throw new InvalidOperationException(
-                    $"余额不足：当前可用余额 {before:0.00} 元，本次需冻结 {amt:0.00} 元，请先充值后再下单");
-            }
-
-            var afterBalance = before - amt;
-            var afterFrozen = beforeFrozen + amt;
-
-            var ok = await CasUpdateAsync(member.Id, before, beforeFrozen, afterBalance, afterFrozen, null);
-            if (!ok)
-            {
-                await _db.Entry(member).ReloadAsync();   // 并发冲突：重读最新值重试
-                continue;
-            }
-
-            await AppendLogAsync(member.Id, BalanceChangeType.Freeze, amt, before, afterBalance,
-                relatedType ?? RelatedOrder, orderId, remark ?? $"下单冻结 {amt:0.00} 元（订单 {orderId}）", null, DateTime.Now);
-            return;
+            throw new BusinessException(
+                $"余额不足：当前可用余额 {before:0.00} 元，本次需冻结 {amt:0.00} 元，请先充值后再下单");
         }
 
-        throw new InvalidOperationException("余额冻结并发冲突，请重试");
+        var affected = await _db.MemMembers
+            .Where(m => m.Id == memMemberId && m.IsDeleted == 0 && m.Balance >= amt)
+            .ExecuteUpdateAsync(s => s
+                .SetProperty(p => p.Balance, p => p.Balance - amt)
+                .SetProperty(p => p.FrozenBalance, p => p.FrozenBalance + amt));
+
+        if (affected != 1)
+        {
+            throw new BusinessException("余额冻结失败：余额已发生变化，请重试");
+        }
+
+        DetachTrackedMember(memMemberId);
+
+        var afterBalance = before - amt;
+        await AppendLogAsync(memMemberId, BalanceChangeType.Freeze, amt, before, afterBalance,
+            relatedType ?? RelatedOrder, orderId, remark ?? $"下单冻结 {amt:0.00} 元（订单 {orderId}）", null, DateTime.Now);
     }
 
     /// <summary>订单支付成功后扣减冻结额（不落库，随调用方事务提交）</summary>
@@ -896,34 +895,29 @@ public class BalanceService : IBalanceService
             return;
         }
 
-        var member = await RequireMemberAsync(memMemberId);
+        // 【阶段八】与 DeductDirectForOrderAsync 同样改为：行锁 + 数据库侧原子扣减。
+        // 原 CAS 重试在 REPEATABLE READ 下会反复读到旧快照，并发时必然"假失败"。
+        var (before, beforeFrozen) = await LockMemberBalanceRowAsync(memMemberId);
 
-        for (var attempt = 0; attempt < MaxCasRetry; attempt++)
+        if (beforeFrozen < amt)
         {
-            var before = member.Balance;          // 扣减只动冻结额，可用余额不变
-            var beforeFrozen = member.FrozenBalance;
-
-            if (beforeFrozen < amt)
-            {
-                throw new InvalidOperationException(
-                    $"冻结余额不足：当前冻结 {beforeFrozen:0.00} 元，本次需扣减 {amt:0.00} 元（疑似重复扣减）");
-            }
-
-            var afterFrozen = beforeFrozen - amt;
-
-            var ok = await CasUpdateAsync(member.Id, before, beforeFrozen, before, afterFrozen, null);
-            if (!ok)
-            {
-                await _db.Entry(member).ReloadAsync();
-                continue;
-            }
-
-            await AppendLogAsync(member.Id, BalanceChangeType.OrderDeduct, amt, before, before,
-                relatedType ?? RelatedOrder, orderId, remark ?? $"订单支付扣减 {amt:0.00} 元（订单 {orderId}）", null, DateTime.Now);
-            return;
+            throw new BusinessException(
+                $"冻结余额不足：当前冻结 {beforeFrozen:0.00} 元，本次需扣减 {amt:0.00} 元（疑似重复扣减）");
         }
 
-        throw new InvalidOperationException("余额扣减并发冲突，请重试");
+        var affected = await _db.MemMembers
+            .Where(m => m.Id == memMemberId && m.IsDeleted == 0 && m.FrozenBalance >= amt)
+            .ExecuteUpdateAsync(s => s.SetProperty(p => p.FrozenBalance, p => p.FrozenBalance - amt));
+
+        if (affected != 1)
+        {
+            throw new BusinessException("冻结余额扣减失败：余额已发生变化，请重试");
+        }
+
+        DetachTrackedMember(memMemberId);
+
+        await AppendLogAsync(memMemberId, BalanceChangeType.OrderDeduct, amt, before, before,
+            relatedType ?? RelatedOrder, orderId, remark ?? $"订单支付扣减 {amt:0.00} 元（订单 {orderId}）", null, DateTime.Now);
     }
 
     /// <summary>订单取消 / 关闭后解冻：冻结额 → 可用余额（不落库，随调用方事务提交）</summary>
@@ -935,36 +929,32 @@ public class BalanceService : IBalanceService
             return;
         }
 
-        var member = await RequireMemberAsync(memMemberId);
+        // 【阶段八】行锁 + 原子转移：frozen - real、balance + real 同一条 UPDATE。
+        // 解冻金额以"实际冻结额"为上限，避免超额退回（如部分已扣减后取消）。
+        var (before, beforeFrozen) = await LockMemberBalanceRowAsync(memMemberId);
 
-        for (var attempt = 0; attempt < MaxCasRetry; attempt++)
+        var real = Math.Min(amt, beforeFrozen);
+        if (real <= 0)
         {
-            var before = member.Balance;
-            var beforeFrozen = member.FrozenBalance;
-
-            // 解冻金额以"实际冻结额"为上限，避免超额退回（如部分已扣减后取消）
-            var real = amt > beforeFrozen ? beforeFrozen : amt;
-            if (real <= 0)
-            {
-                return;
-            }
-
-            var afterBalance = before + real;
-            var afterFrozen = beforeFrozen - real;
-
-            var ok = await CasUpdateAsync(member.Id, before, beforeFrozen, afterBalance, afterFrozen, null);
-            if (!ok)
-            {
-                await _db.Entry(member).ReloadAsync();
-                continue;
-            }
-
-            await AppendLogAsync(member.Id, BalanceChangeType.Unfreeze, real, before, afterBalance,
-                relatedType ?? RelatedOrder, orderId, remark ?? $"订单取消解冻退回 {real:0.00} 元（订单 {orderId}）", null, DateTime.Now);
             return;
         }
 
-        throw new InvalidOperationException("余额解冻并发冲突，请重试");
+        var affected = await _db.MemMembers
+            .Where(m => m.Id == memMemberId && m.IsDeleted == 0 && m.FrozenBalance >= real)
+            .ExecuteUpdateAsync(s => s
+                .SetProperty(p => p.Balance, p => p.Balance + real)
+                .SetProperty(p => p.FrozenBalance, p => p.FrozenBalance - real));
+
+        if (affected != 1)
+        {
+            throw new BusinessException("余额解冻失败：冻结额已发生变化，请重试");
+        }
+
+        DetachTrackedMember(memMemberId);
+
+        var afterBalance = before + real;
+        await AppendLogAsync(memMemberId, BalanceChangeType.Unfreeze, real, before, afterBalance,
+            relatedType ?? RelatedOrder, orderId, remark ?? $"订单取消解冻退回 {real:0.00} 元（订单 {orderId}）", null, DateTime.Now);
     }
 
     /// <summary>退款执行成功后把金额退回会员可用余额（change_type=3，不落库）</summary>
@@ -982,9 +972,16 @@ public class BalanceService : IBalanceService
 
     /// <summary>
     /// 订单【直接扣减可用余额】（余额支付：确认订单页「提交即扣款」）。
-    /// 直接减少 mem_member.balance（CAS 乐观锁），并写 OrderDeduct 流水（after_balance 为真值）。
-    /// 与 DeductForOrderAsync（扣冻结额）的区别：本方法不依赖先验冻结，单事务下单支付时使用。
-    /// 余额不足或并发冲突抛 InvalidOperationException，由调用方事务整体回滚。
+    ///
+    /// 【阶段八 改造要点】
+    ///   ① 不再"查出来 → C# 里减 → 写回"（原 CAS 循环），改为数据库侧原子扣减：
+    ///        UPDATE mem_member SET balance = balance - @amt
+    ///        WHERE id = @id AND balance >= @amt
+    ///      条件里带 balance &gt;= @amt，从根上杜绝扣成负数；affected=0 即代表余额已不足。
+    ///   ② 必须在事务内调用：行锁/扣减与订单、库存同生共死，回滚即全部撤销。
+    ///   ③ 流水 before/after 取自加锁读值（锁住期间无人能改），保证与余额严格勾稽。
+    ///
+    /// 余额不足抛 BusinessException（→ 400，外层事务回滚，钱不动、货不动、订单不落）。
     /// </summary>
     public async Task DeductDirectForOrderAsync(long memMemberId, decimal amount, long orderId, string? remark = null)
     {
@@ -994,39 +991,123 @@ public class BalanceService : IBalanceService
             return;
         }
 
-        var member = await RequireMemberAsync(memMemberId);
+        RequireAmbientTransaction("余额扣减");
 
-        for (var attempt = 0; attempt < MaxCasRetry; attempt++)
+        // ① 排他锁读权威余额（同一事务内重复加锁是无害的，与前置闸门共用同一把行锁）
+        var (before, _) = await LockMemberBalanceRowAsync(memMemberId);
+        if (before < amt)
         {
-            var before = member.Balance;
-            var beforeFrozen = member.FrozenBalance;
-
-            if (before < amt)
-            {
-                throw new InvalidOperationException(
-                    $"余额不足：当前可用余额 {before:0.00} 元，本次需支付 {amt:0.00} 元，请先充值后再下单");
-            }
-
-            var afterBalance = before - amt;
-
-            var ok = await CasUpdateAsync(member.Id, before, beforeFrozen, afterBalance, beforeFrozen, null);
-            if (!ok)
-            {
-                await _db.Entry(member).ReloadAsync();   // 并发冲突：重读最新值重试
-                continue;
-            }
-
-            await AppendLogAsync(member.Id, BalanceChangeType.OrderDeduct, amt, before, afterBalance,
-                RelatedOrder, orderId, remark ?? $"订单支付扣减 {amt:0.00} 元（订单 {orderId}）", null, DateTime.Now);
-            return;
+            throw new BusinessException(
+                $"余额不足：当前可用余额 {before:0.00} 元，本次需支付 {amt:0.00} 元，请先充值后再下单");
         }
 
-        throw new InvalidOperationException("余额扣减并发冲突，请重试");
+        // ② 数据库侧原子扣减：SET balance = balance - @amt（不是读改写，不存在丢失更新）
+        var affected = await _db.MemMembers
+            .Where(m => m.Id == memMemberId && m.IsDeleted == 0 && m.Balance >= amt)
+            .ExecuteUpdateAsync(s => s.SetProperty(p => p.Balance, p => p.Balance - amt));
+
+        if (affected != 1)
+        {
+            // 理论上锁已保证不会走到这里；留作最后一道防线，绝不允许"扣了 0 行还往下走"
+            throw new BusinessException("余额扣减失败：余额已发生变化，请重试");
+        }
+
+        // ③ 扣减后立刻让跟踪器里的旧实体失效，避免后续 SaveChanges 把过期余额写回
+        DetachTrackedMember(memMemberId);
+
+        var afterBalance = before - amt;
+        await AppendLogAsync(memMemberId, BalanceChangeType.OrderDeduct, amt, before, afterBalance,
+            RelatedOrder, orderId, remark ?? $"订单支付扣减 {amt:0.00} 元（订单 {orderId}）", null, DateTime.Now);
+    }
+
+    /// <summary>
+    /// 【阶段八】余额支付前置闸门：在调用方事务内锁定余额行并校验是否充足。
+    /// 返回锁定瞬间的可用余额（此时该行已被排他锁占用，直到事务提交/回滚才释放）。
+    /// </summary>
+    public async Task<decimal> LockBalanceForPaymentAsync(long memMemberId, decimal amount)
+    {
+        var amt = decimal.Round(amount, 2);
+        RequireAmbientTransaction("余额锁定");
+
+        var (balance, _) = await LockMemberBalanceRowAsync(memMemberId);
+
+        if (balance < amt)
+        {
+            throw new BusinessException(
+                $"余额不足：当前可用余额 {balance:0.00} 元，本次需支付 {amt:0.00} 元，请先充值后再下单");
+        }
+
+        return balance;
     }
 
     // ============================================================
     // 私有：资金内核
     // ============================================================
+
+    /// <summary>
+    /// 【阶段八】对 mem_member 余额行加排他锁并读取权威余额（可用 + 冻结）。
+    ///
+    /// 用原生 SQL 而不是 EF 查询，有两个必须的理由：
+    ///   1) EF Core 没有 ForUpdate()，普通查询是快照读，锁不住行；
+    ///   2) 在 REPEATABLE READ 下，普通 SELECT 读的是事务早先建立的快照
+    ///      （这就是原 CAS 重试在并发时"永远读到旧值、重试白做"的根因）。
+    ///      SELECT ... FOR UPDATE 是当前读，永远返回最新已提交值。
+    ///
+    /// 必须在事务内调用，否则 autocommit 会让行锁在本语句结束即释放，等于没锁。
+    /// </summary>
+    private async Task<(decimal Balance, decimal Frozen)> LockMemberBalanceRowAsync(long memMemberId)
+    {
+        RequireAmbientTransaction("余额行锁");
+
+        var conn = _db.Database.GetDbConnection();
+        if (conn.State != System.Data.ConnectionState.Open)
+        {
+            await conn.OpenAsync();
+        }
+
+        await using var cmd = conn.CreateCommand();
+        cmd.Transaction = _db.Database.CurrentTransaction!.GetDbTransaction();
+        cmd.CommandText = "SELECT balance, frozen_balance FROM mem_member WHERE id = @id AND is_deleted = 0 FOR UPDATE";
+
+        var p = cmd.CreateParameter();
+        p.ParameterName = "@id";
+        p.Value = memMemberId;
+        cmd.Parameters.Add(p);
+
+        await using var reader = await cmd.ExecuteReaderAsync();
+        if (!await reader.ReadAsync())
+        {
+            throw new BusinessException("会员不存在或已注销，无法完成余额支付");
+        }
+
+        var balance = decimal.Round(reader.GetDecimal(0), 2);
+        var frozen = reader.GetDecimal(1);
+        return (balance, decimal.Round(frozen, 2));
+    }
+
+    /// <summary>资金写入必须在事务内：无事务时行锁/回滚全部失效，直接报错而不是"静默不安全地执行"。</summary>
+    private void RequireAmbientTransaction(string operation)
+    {
+        if (_db.Database.CurrentTransaction == null)
+        {
+            throw new InvalidOperationException($"{operation}必须在数据库事务内执行（当前无活动事务）");
+        }
+    }
+
+    /// <summary>
+    /// 丢弃跟踪器里该会员的实体。
+    /// ExecuteUpdate 绕过变更跟踪，跟踪器中的余额仍是旧值；若后续有人修改该实体并 SaveChanges，
+    /// EF 会把它认为"已修改"的列回写，极端情况下可能覆盖掉刚扣的余额。主动 Detach 一劳永逸。
+    /// </summary>
+    private void DetachTrackedMember(long memMemberId)
+    {
+        var tracked = _db.ChangeTracker.Entries<MemMember>()
+            .FirstOrDefault(e => e.Entity.Id == memMemberId);
+        if (tracked != null)
+        {
+            tracked.State = EntityState.Detached;
+        }
+    }
 
     /// <summary>
     /// 入账（可用余额增加）：CAS 更新 + 写流水。

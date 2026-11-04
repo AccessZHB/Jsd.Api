@@ -97,8 +97,21 @@ public interface IBalanceService
     /// <summary>
     /// 订单【直接扣减可用余额】（余额支付场景：确认订单页「提交即扣款」）。
     /// 与 DeductForOrderAsync（扣冻结额）不同：本方法直接减少 mem_member.balance，
-    /// 不依赖先验冻结，CAS 乐观锁防超扣，并写 OrderDeduct 流水。
-    /// 失败（余额不足/并发冲突）抛 InvalidOperationException，由调用方事务回滚。
+    /// 不依赖先验冻结，数据库侧原子扣减（SET balance = balance - amt）防超扣，并写 OrderDeduct 流水。
+    /// 失败（余额不足）抛 BusinessException，由调用方事务回滚；必须在外层事务内调用。
     /// </summary>
     Task DeductDirectForOrderAsync(long memMemberId, decimal amount, long orderId, string? remark = null);
+
+    /// <summary>
+    /// 【阶段八】余额支付前置闸门：在调用方事务内对 mem_member 余额行加排他锁（SELECT ... FOR UPDATE），
+    /// 读取权威余额并校验是否充足，返回锁定瞬间的可用余额。
+    ///
+    /// 为什么必须显式加锁而不是"先查再扣"：
+    ///   1) 同一会员并发下单时，两个事务都会读到"够用"的余额，各自扣减 → 超扣（花掉不存在的钱）；
+    ///   2) 本项目的 CAS 重读在 REPEATABLE READ 下会拿到旧快照，重试永远失败（假失败）；
+    ///   3) 行锁让"读余额 → 判充足 → 扣减 → 建单 → 扣库存"串行化，且锁随事务提交/回滚释放。
+    ///
+    /// 余额不足抛 <see cref="Jsd.Api.Exceptions.BusinessException"/>（调用方转 400，不动任何数据）。
+    /// </summary>
+    Task<decimal> LockBalanceForPaymentAsync(long memMemberId, decimal amount);
 }
