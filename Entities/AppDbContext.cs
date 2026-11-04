@@ -93,6 +93,9 @@ public class AppDbContext : DbContext
     /// <summary>会员收货地址表（mem_member_address，小程序确认订单页地址落库）</summary>
     public DbSet<MemMemberAddress> MemMemberAddresses => Set<MemMemberAddress>();
 
+    /// <summary>会员购物车（mem_cart，服务端持久化，cart_key 唯一 → 加工/不加工绝不合并）</summary>
+    public DbSet<MemCart> MemCarts => Set<MemCart>();
+
     // ==================== 财务结算模块 ====================
 
     /// <summary>应收账款表（trx_receivable，B2B 赊账/月结）</summary>
@@ -452,6 +455,16 @@ public class AppDbContext : DbContext
         {
             entity.HasIndex(e => e.MemberId);                 // 按会员查地址列表
             entity.HasIndex(e => new { e.MemberId, e.IsDefault }); // 查会员默认地址
+        });
+
+        // ---------- mem_cart 会员购物车表 ----------
+        // ⚠️ cart_key 唯一索引是「不同加工属性绝不合并」的最后一道防线：
+        //    key = memberId_prodInfoId_skuId_processingType_prescriptionHash
+        modelBuilder.Entity<MemCart>(entity =>
+        {
+            entity.HasIndex(e => e.CartKey).IsUnique();                 // uk_cart_key
+            entity.HasIndex(e => e.MemberId);                            // idx_member
+            entity.HasIndex(e => new { e.MemberId, e.IsSelected });      // 结算取勾选项
         });
 
         // ---------- 财务结算模块 ----------

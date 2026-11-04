@@ -3200,3 +3200,196 @@ PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 ALTER TABLE trx_order
     ADD COLUMN shipping_image_url VARCHAR(500) NULL
     COMMENT '物流面单照片路径（发货时上传，相对路径如 /upload/202610/xxx.jpg）';
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    -- ============================================================
+-- 会员购物车表 mem_cart
+-- 数据库：jingsuding_order（MySQL 8.0）
+-- 目的：把小程序购物车从前端 localStorage 迁移到服务端，
+--       并修复「需要加工 / 不需要加工」被错误合并成数量×2 的严重 Bug。
+--
+-- 合并判定唯一键 cart_key =
+--   memberId_prodInfoId_skuId_processingType_prescriptionHash
+-- 任意一项不同（尤其 processingType 0/1、验光不同）→ 必然是两条独立记录。
+--
+-- 本脚本幂等，可重复执行。
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS `mem_cart` (
+  `id`                BIGINT       NOT NULL AUTO_INCREMENT COMMENT '主键',
+  `member_id`         BIGINT       NOT NULL                COMMENT '会员ID（mem_member.id）',
+  `prod_info_id`      BIGINT       NOT NULL                COMMENT '商品ID（prod_info.id）',
+  `sku_id`            BIGINT       NOT NULL                COMMENT '规格SKU ID（prod_sku.id）',
+  `quantity`          INT          NOT NULL DEFAULT 1      COMMENT '数量',
+  `processing_type`   TINYINT      NOT NULL DEFAULT 0      COMMENT '是否需要加工：0-不需要(只发片) 1-需要(邮寄镜架)',
+  `prescription_data` LONGTEXT         NULL                COMMENT '验光数据JSON（{left:{sphere,cylinder,axis,pd,height},right:{...}}）',
+  `prescription_hash` VARCHAR(64)  NOT NULL DEFAULT 'NORX' COMMENT '验光数据规范化SHA256（无验光=NORX）',
+  `cart_key`          VARCHAR(128) NOT NULL                COMMENT '唯一键：member_prod_sku_pt_rxhash',
+  `is_selected`       TINYINT      NOT NULL DEFAULT 1      COMMENT '是否勾选：0-否 1-是',
+  `add_time`          DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '加入时间',
+  `update_time`       DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_cart_key` (`cart_key`) COMMENT '不同加工属性/验光绝不合并的最后防线',
+  KEY `idx_member` (`member_id`),
+  KEY `idx_member_selected` (`member_id`, `is_selected`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='会员购物车（服务端持久化，跨设备同步）';
+
+-- ============================================================
+-- 旧数据清理
+-- 说明：旧购物车是纯前端 localStorage，数据库里没有历史购物车数据，
+--       小程序端已删除 jsd_mp_cart_* 的读写逻辑（旧缓存会被忽略并自然过期）。
+-- 下面只清理「本表启用后可能产生的脏数据」，可安全重复执行。
+-- ============================================================
+
+-- 1) 清理 SKU 已被物理删除的购物车行（商品不存在则无法下单）
+DELETE c FROM `mem_cart` c
+LEFT JOIN `prod_sku` s ON s.`id` = c.`sku_id`
+WHERE s.`id` IS NULL;
+
+-- 2) 纠正脏数据：非镜片商品不应存在「需要加工」标记
+UPDATE `mem_cart` c
+JOIN `prod_info` p ON p.`id` = c.`prod_info_id`
+SET c.`processing_type` = 0,
+    c.`prescription_data` = NULL,
+    c.`prescription_hash` = 'NORX'
+WHERE p.`is_prescription` <> 1
+  AND c.`processing_type` <> 0;
+
+-- 3) 数量非法（<=0）纠正为 1
+UPDATE `mem_cart` SET `quantity` = 1 WHERE `quantity` <= 0;
+
+-- 4) 自检：查看是否存在 cart_key 重复（应始终为 0 行）
+-- SELECT cart_key, COUNT(*) cnt FROM mem_cart GROUP BY cart_key HAVING cnt > 1;
+
+SELECT 'mem_cart 建表与清理完成' AS result;
+
+
+
+-- ============================================================================
+-- 阶段八 · 权限补全：给「运营专员（role_id=2）」补订单模块权限
+--
+-- 背景：阶段七给 OrderController 的 page/detail/remark/ship/export/cancel
+--       加上了 [Permission(OrderPermissions.X)] 之后，role_id=2 原本只有
+--       「物流查询 / 刷新物流」两个菜单，没有 order:list —— 客服登进后台点
+--       「订单管理」会直接 403 空白。本脚本把订单模块授权补上。
+--
+-- 设计说明：
+--   * 只授予「日常作业」所需权限：列表 / 详情 / 备注 / 发货 / 导出；
+--   * 刻意【不授予】order:cancel（取消订单会触发库存回滚与资金处理，
+--     属高风险动作，保留给超级管理员或财务角色）。需要时放开最后一段即可。
+--   * 脚本幂等：重复执行不会产生重复行，也不会报主键冲突。
+--
+-- 执行：mysql -uroot -p jingsuding_order < grant_order_permissions_role2.sql
+-- ============================================================================
+
+-- ① 订单管理（父菜单，id=3）：没有父菜单，前端菜单树渲染不出「订单管理」节点
+INSERT INTO sys_role_menu (role_id, menu_id, create_time)
+SELECT 2, m.id, NOW()
+FROM sys_menu m
+WHERE m.id = 3
+  AND NOT EXISTS (SELECT 1 FROM sys_role_menu rm WHERE rm.role_id = 2 AND rm.menu_id = m.id);
+
+-- ② 订单模块的作业级权限（按权限码匹配，避免依赖硬编码 id）
+INSERT INTO sys_role_menu (role_id, menu_id, create_time)
+SELECT 2, m.id, NOW()
+FROM sys_menu m
+WHERE m.permission IN (
+        'order:list',      -- 订单列表（本次核心诉求）
+        'order:query',     -- 订单查询
+        'order:detail',    -- 订单详情
+        'order:remark',    -- 商家备注
+        'order:ship',      -- 发货
+        'order:export'     -- 导出
+      )
+  AND NOT EXISTS (SELECT 1 FROM sys_role_menu rm WHERE rm.role_id = 2 AND rm.menu_id = m.id);
+
+-- ③ 【默认不执行】如需允许运营专员取消订单，去掉下面注释：
+-- INSERT INTO sys_role_menu (role_id, menu_id, create_time)
+-- SELECT 2, m.id, NOW()
+-- FROM sys_menu m
+-- WHERE m.permission = 'order:cancel'
+--   AND NOT EXISTS (SELECT 1 FROM sys_role_menu rm WHERE rm.role_id = 2 AND rm.menu_id = m.id);
+
+-- ④ 执行结果自检
+SELECT rm.role_id, m.id, m.menu_name, m.permission
+FROM sys_role_menu rm
+JOIN sys_menu m ON m.id = rm.menu_id
+WHERE rm.role_id = 2
+ORDER BY m.id;
+
+
+
+
+
+
+
+
+
+
+
+
+-- ============================================================================
+-- 阶段九 · trx_order 增加「本单冻结金额」字段（frozen_amount）
+--
+-- 背景：mem_member.frozen_balance 是该会员【所有订单共用一个池子】，
+--       仅凭订单应付金额无法判断这笔钱是不是本单冻结的。
+--       原来的取消逻辑用 UnfreezeForOrderAsync(PayAmount) 去解冻，
+--       内部按 min(应付, 池子) 释放 —— 一旦会员同时有「冻结单」和「未冻结单」，
+--       取消后者会把前者的冻结额退掉，导致前者支付时报"冻结余额不足"。
+--
+-- 本字段语义：>0 = 本单仍持有这么多冻结额；解冻 / 转扣减后必须归零（防重复释放）。
+--
+-- 幂等：可重复执行。
+-- ============================================================================
+
+-- ① 加列（已存在则跳过）
+SET @col_exists := (
+    SELECT COUNT(*) FROM information_schema.columns
+    WHERE table_schema = DATABASE()
+      AND table_name = 'trx_order'
+      AND column_name = 'frozen_amount'
+);
+
+SET @ddl := IF(@col_exists = 0,
+    'ALTER TABLE trx_order ADD COLUMN frozen_amount DECIMAL(12,2) NOT NULL DEFAULT 0.00 COMMENT ''本单冻结金额（解冻/转扣减后归零）'' AFTER pay_amount',
+    'SELECT ''trx_order.frozen_amount 已存在，跳过加列'' AS msg');
+
+PREPARE stmt FROM @ddl;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+-- ② 回填历史数据：待付款订单的真实冻结额 = Σ冻结(change_type=7) - Σ解冻(8)
+--    仅回填 order_status=0（待付款）的订单——已支付/已关闭的订单不存在"待释放的冻结"。
+--    没有流水、或净额为 0/负 的订单保持 0（不会凭空解冻）。
+UPDATE trx_order o
+JOIN (
+    SELECT l.related_id AS oid,
+           SUM(CASE WHEN l.change_type = 7 THEN l.change_amount
+                    WHEN l.change_type = 8 THEN -l.change_amount
+                    ELSE 0 END) AS net
+    FROM mkt_balance_log l
+    WHERE l.related_type = 1          -- 1 = 关联订单
+    GROUP BY l.related_id
+) t ON t.oid = o.id
+SET o.frozen_amount = GREATEST(t.net, 0)
+WHERE o.order_status = 0
+  AND o.frozen_amount = 0
+  AND t.net > 0;
+
+-- ③ 自检
+SELECT id, order_no, order_status, pay_amount, frozen_amount
+FROM trx_order
+WHERE order_status = 0
+ORDER BY id DESC
+LIMIT 10;
+

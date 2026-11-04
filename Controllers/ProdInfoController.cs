@@ -28,6 +28,7 @@ public class ProdInfoController : ControllerBase
     /// keyword 同时匹配商品名称和商品编码；返回值含 SKU 价格区间与库存总量
     /// </summary>
     [HttpGet("page")]
+    [AllowAnonymous]  // 商品列表：小程序首页瀑布流公开浏览，无需登录（未登录按标准价展示，会员令牌自动带会员价）
     public async Task<ApiResponse<PagedResult<ProdInfoDto>>> GetPage(
         [FromQuery] string? keyword,
         [FromQuery] long? categoryId,
@@ -44,6 +45,7 @@ public class ProdInfoController : ControllerBase
     /// 示例：GET /api/prod-info/123/detail
     /// </summary>
     [HttpGet("{id:long}/detail")]
+    [AllowAnonymous]  // 商品详情：小程序商品详情页公开浏览，无需登录
     public async Task<ApiResponse<ProdInfoDetailDto>> GetDetail(long id)
     {
         return await _productService.GetDetailAsync(id);

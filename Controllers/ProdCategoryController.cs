@@ -26,6 +26,7 @@ public class ProdCategoryController : ControllerBase
     /// 示例：GET /api/prod/category/tree
     /// </summary>
     [HttpGet("tree")]
+    [AllowAnonymous]  // 商品分类树：小程序首页/分类页公开浏览，无需登录（未登录按标准数据返回）
     public async Task<ApiResponse<List<CategoryTreeNodeDto>>> GetTree()
     {
         return await _categoryService.GetTreeAsync();

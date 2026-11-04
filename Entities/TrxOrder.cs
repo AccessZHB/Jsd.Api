@@ -86,6 +86,19 @@ public class TrxOrder
     [Column("pay_amount", TypeName = "decimal(12,2)")]
     public decimal PayAmount { get; set; }
 
+    /// <summary>
+    /// 【本单冻结金额】下单时从可用余额冻结到 frozen_balance 的金额（阶段九新增）。
+    ///
+    /// 为什么需要单独记一笔：`mem_member.frozen_balance` 是该会员所有订单共用的一个池子，
+    /// 仅凭「订单应付金额」无法判断这笔钱到底是不是本单冻结的。
+    /// 没有这个字段时，取消一个【从未冻结】的订单会按 min(应付, 池子) 释放，
+    /// 结果把【别的订单】的冻结额退掉，导致那张单支付时反而报"冻结余额不足"。
+    ///
+    /// 语义：>0 表示本单还持有这么多冻结额；解冻 / 转扣减后**必须归零**，保证不会重复释放。
+    /// </summary>
+    [Column("frozen_amount", TypeName = "decimal(12,2)")]
+    public decimal FrozenAmount { get; set; }
+
     // ==================== 状态与支付 ====================
 
     /// <summary>订单状态：0-待付款 1-已支付(待发货) 2-已发货(待收货) 3-已完成 4-已关闭</summary>
