@@ -127,14 +127,15 @@ public class MemMemberService : IMemMemberService
             return ApiResponse<object>.Fail("登录账号已存在，请更换");
         }
 
-        // 2. 密码必填 + 长度下限（新增必须有登录密码，且不能少于 6 位）
+        // 2. 密码必填 + 强度校验（与后台"登录安全策略"保持一致）
         if (string.IsNullOrWhiteSpace(dto.Password))
         {
             return ApiResponse<object>.Fail("登录密码不能为空（新增客户必须设置密码）");
         }
-        if (dto.Password.Trim().Length < 6)
+        var strengthError = await _securityService.ValidatePasswordStrengthAsync(dto.Password.Trim());
+        if (strengthError != null)
         {
-            return ApiResponse<object>.Fail("登录密码长度不能少于 6 位");
+            return ApiResponse<object>.Fail(strengthError);
         }
 
         // 3. 自动生成会员编号
@@ -280,10 +281,15 @@ public class MemMemberService : IMemMemberService
             return ApiResponse<object>.Fail("客户不存在", 404);
         }
 
-        // 2. 新密码长度下限校验（与新增/编辑保持一致）
-        if (string.IsNullOrWhiteSpace(newPassword) || newPassword.Trim().Length < 6)
+        // 2. 新密码强度校验（与后台"登录安全策略"保持一致）
+        if (string.IsNullOrWhiteSpace(newPassword))
         {
-            return ApiResponse<object>.Fail("新密码长度不能少于 6 位");
+            return ApiResponse<object>.Fail("新密码不能为空");
+        }
+        var strengthError = await _securityService.ValidatePasswordStrengthAsync(newPassword.Trim());
+        if (strengthError != null)
+        {
+            return ApiResponse<object>.Fail(strengthError);
         }
 
         // 3. BCrypt(cost=12) 加密覆盖原密码（绝不持久化明文）
@@ -312,10 +318,15 @@ public class MemMemberService : IMemMemberService
             return ApiResponse<object>.Fail("原登录密码不正确");
         }
 
-        // 3. 新密码长度下限校验（与新增/编辑保持一致）
-        if (string.IsNullOrWhiteSpace(newPassword) || newPassword.Trim().Length < 6)
+        // 3. 新密码强度校验（与后台"登录安全策略"保持一致）
+        if (string.IsNullOrWhiteSpace(newPassword))
         {
-            return ApiResponse<object>.Fail("新密码长度不能少于 6 位");
+            return ApiResponse<object>.Fail("新密码不能为空");
+        }
+        var strengthError = await _securityService.ValidatePasswordStrengthAsync(newPassword.Trim());
+        if (strengthError != null)
+        {
+            return ApiResponse<object>.Fail(strengthError);
         }
 
         // 4. 新密码不能与旧密码相同（避免无意义操作，降低撞库/重放风险）

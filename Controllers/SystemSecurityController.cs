@@ -26,8 +26,12 @@ public class SystemSecurityController : ControllerBase
         _securityService = securityService;
     }
 
-    /// <summary>获取登录安全策略配置（失败锁定阈值/时长、密码强度、验证码开关）</summary>
+    /// <summary>
+    /// 获取登录安全策略配置（失败锁定阈值/时长、密码强度、验证码开关）。
+    /// 登录页在未登录状态就需要读取验证码开关，故本接口单独放行匿名访问（不返回任何账号数据）。
+    /// </summary>
     [HttpGet("config")]
+    [AllowAnonymous]
     public async Task<ApiResponse<SecurityConfigDto>> GetConfig()
     {
         var config = await _securityService.GetConfigAsync();

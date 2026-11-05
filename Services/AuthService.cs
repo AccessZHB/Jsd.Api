@@ -14,15 +14,18 @@ public class AuthService : IAuthService
     private readonly ISysUserRepository _userRepository;
     private readonly ISecurityService _securityService;
     private readonly JwtService _jwtService;
+    private readonly ISessionRegistry _sessionRegistry;
 
     public AuthService(
         ISysUserRepository userRepository,
         ISecurityService securityService,
-        JwtService jwtService)
+        JwtService jwtService,
+        ISessionRegistry sessionRegistry)
     {
         _userRepository = userRepository;
         _securityService = securityService;
         _jwtService = jwtService;
+        _sessionRegistry = sessionRegistry;
     }
 
     /// <summary>
@@ -76,14 +79,29 @@ public class AuthService : IAuthService
             return ApiResponse<LoginResultDto>.Fail("用户名或密码错误", 401);
         }
 
+        // 4.1 密码有效期校验（0 = 永不过期）
+        if (config.PasswordValidDays > 0)
+        {
+            var lastChanged = user.PwdUpdateTime ?? user.CreateTime;
+            if (lastChanged.AddDays(config.PasswordValidDays) <= DateTime.Now)
+            {
+                await _securityService.RecordLoginFailureAsync(null, dto.UserName, "密码已超过有效期", clientIp, userAgent);
+                return ApiResponse<LoginResultDto>.Fail(
+                    $"密码已超过 {config.PasswordValidDays} 天有效期，请联系管理员重置密码", 403);
+            }
+        }
+
         // 5. 登录成功：清零失败计数、回写最后登录时间/IP、写成功登录日志
         user.LastLoginTime = DateTime.Now;
         user.LastLoginIp = clientIp;
         await _userRepository.SaveChangesAsync();
         await _securityService.RecordLoginSuccessAsync(user, clientIp, userAgent);
 
-        // 6. 签发双令牌（access + refresh）
-        var (accessToken, refreshToken, expiresIn, _) = _jwtService.GenerateTokenPair(user);
+        // 6. 签发双令牌（access + refresh），并登记本次会话（并发登录策略依据 sid 校验）
+        var sessionId = Guid.NewGuid().ToString("N");
+        var (accessToken, refreshToken, expiresIn, _) = _jwtService.GenerateTokenPair(user, sessionId);
+        _sessionRegistry.Register(user.Id, sessionId, config.AllowConcurrentLogin,
+            config.MaxConcurrentSessions, TimeSpan.FromSeconds(expiresIn));
 
         // 7. 组装返回数据（不含密码；Token 为兼容旧前端的字段，与 AccessToken 同值）
         var result = new LoginResultDto

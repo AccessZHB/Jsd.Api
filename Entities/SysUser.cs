@@ -75,6 +75,10 @@ public class SysUser
     [Column("pwd_version")]
     public int PwdVersion { get; set; }
 
+    /// <summary>密码最后修改时间（用于"密码有效期"策略；为空时回退创建时间）</summary>
+    [Column("pwd_update_time")]
+    public DateTime? PwdUpdateTime { get; set; }
+
     /// <summary>创建时间（数据库自动生成）</summary>
     [Column("create_time")]
     [DatabaseGenerated(DatabaseGeneratedOption.Identity)]

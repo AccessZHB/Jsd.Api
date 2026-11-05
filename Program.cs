@@ -226,6 +226,7 @@ builder.Services.AddSingleton<OperationLogWriter>();
 builder.Services.AddHostedService<OperationLogBackgroundService>();
 
 // 系统管理模块 —— 服务层（登录安全策略 / 日志查询维护）
+builder.Services.AddSingleton<ISessionRegistry, SessionRegistry>();  // 登录会话登记（并发登录策略，单机内存实现）
 builder.Services.AddScoped<ISecurityService, SecurityService>();
 builder.Services.AddScoped<ISystemLogService, SystemLogService>();
 

@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Jsd.Api.Entities;
 using Jsd.Api.Repositories;
+using Jsd.Api.Services;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Memory;
 
@@ -24,12 +25,21 @@ public class TokenVersionMiddleware
         _cache = cache;
     }
 
-    public async Task InvokeAsync(HttpContext context, AppDbContext db)
+    public async Task InvokeAsync(HttpContext context, AppDbContext db, ISessionRegistry sessionRegistry)
     {
         if (context.User.Identity?.IsAuthenticated == true)
         {
             var verClaim = context.User.FindFirst("ver")?.Value;
+            var sidClaim = context.User.FindFirst("sid")?.Value;
             var idClaim = context.User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
+
+            // 并发登录 / 最大会话数校验：仅校验带 sid 的新 Token（旧 Token 兼容放行）
+            if (!string.IsNullOrEmpty(sidClaim) && long.TryParse(idClaim, out var sessionUserId)
+                && !sessionRegistry.IsActive(sessionUserId, sidClaim))
+            {
+                await WriteUnauthorized(context, "账号已在其他终端登录，请重新登录");
+                return;
+            }
 
             // 有 ver 声明才校验（旧 Token 兼容放行）
             if (verClaim != null && long.TryParse(idClaim, out var userId))
@@ -46,20 +56,26 @@ public class TokenVersionMiddleware
 
                 if (int.TryParse(verClaim, out var tokenVersion) && tokenVersion < currentVersion)
                 {
-                    context.Response.StatusCode = 401;
-                    context.Response.ContentType = "application/json; charset=utf-8";
-                    var body = JsonSerializer.Serialize(new
-                    {
-                        code = 401,
-                        message = "密码已修改，请重新登录",
-                        data = (object?)null
-                    });
-                    await context.Response.WriteAsync(body);
+                    await WriteUnauthorized(context, "密码已修改，请重新登录");
                     return;
                 }
             }
         }
 
         await _next(context);
+    }
+
+    /// <summary>统一输出 401 业务响应</summary>
+    private static async Task WriteUnauthorized(HttpContext context, string message)
+    {
+        context.Response.StatusCode = 401;
+        context.Response.ContentType = "application/json; charset=utf-8";
+        var body = JsonSerializer.Serialize(new
+        {
+            code = 401,
+            message,
+            data = (object?)null
+        });
+        await context.Response.WriteAsync(body);
     }
 }

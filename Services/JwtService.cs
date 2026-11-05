@@ -33,7 +33,7 @@ public class JwtService
         var secretKey = section["SecretKey"]!;
         var issuer = section["Issuer"];
         var audience = section["Audience"];
-        var expireMinutes = int.Parse(section["ExpireMinutes"] ?? "720");
+        var expireMinutes = GetAccessExpireMinutes();
 
         // 对称密钥 + 签名算法
         var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(secretKey));
@@ -67,13 +67,14 @@ public class JwtService
     /// 刷新时核销（用过即删）实现防重放：旧 refreshToken 使用后立即失效。
     /// 返回：(access, refresh, access有效期秒, refresh的jti)
     /// </summary>
-    public (string AccessToken, string RefreshToken, int ExpiresIn, string RefreshJti) GenerateTokenPair(SysUser user)
+    public (string AccessToken, string RefreshToken, int ExpiresIn, string RefreshJti) GenerateTokenPair(
+        SysUser user, string? sessionId = null)
     {
         var section = _configuration.GetSection("Jwt");
         var secretKey = section["SecretKey"]!;
         var issuer = section["Issuer"];
         var audience = section["Audience"];
-        var accessMinutes = int.Parse(section["ExpireMinutes"] ?? "720");
+        var accessMinutes = GetAccessExpireMinutes();
         // refresh 有效期：默认 7 天（文档 6.3），可在 appsettings Jwt:RefreshExpireMinutes 覆盖
         var refreshMinutes = int.Parse(section["RefreshExpireMinutes"] ?? "10080");
 
@@ -90,6 +91,10 @@ public class JwtService
             new("role_id", user.RoleId?.ToString() ?? "0"),
             new("ver", user.PwdVersion.ToString())
         };
+        // sid：本次登录会话标识，供"并发登录 / 最大会话数"策略逐请求校验
+        if (!string.IsNullOrEmpty(sessionId))
+            accessClaims.Add(new Claim("sid", sessionId));
+
         var access = new JwtSecurityToken(
             issuer: issuer, audience: audience, claims: accessClaims,
             expires: DateTime.UtcNow.AddMinutes(accessMinutes), signingCredentials: credentials);
@@ -150,6 +155,19 @@ public class JwtService
         );
 
         return (new JwtSecurityTokenHandler().WriteToken(token), expireMinutes * 60);
+    }
+
+    /// <summary>
+    /// 管理员 access token 有效期（分钟）：
+    /// 优先读取登录安全策略的 tokenExpireHours（由 SecurityService 在读取/保存策略时写入缓存），
+    /// 缓存未命中时回退 appsettings 的 Jwt:ExpireMinutes。
+    /// </summary>
+    private int GetAccessExpireMinutes()
+    {
+        if (_cache.TryGetValue(SecurityService.TokenExpireHoursCacheKey, out int hours) && hours > 0)
+            return hours * 60;
+
+        return int.Parse(_configuration.GetSection("Jwt")["ExpireMinutes"] ?? "720");
     }
 
     /// <summary>

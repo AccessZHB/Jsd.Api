@@ -60,6 +60,13 @@ public class SecurityService : ISecurityService
     /// <summary>安全策略在 sys_config 里的配置键</summary>
     public const string ConfigKey = "security.login";
 
+    /// <summary>
+    /// Token 有效期（小时）的进程内缓存键。
+    /// JwtService 是单例、无法注入 Scoped 的配置服务，因此由本服务读取策略后写入缓存，
+    /// JwtService 签发令牌时同步读取，保证界面配置的 tokenExpireHours 真正生效。
+    /// </summary>
+    public const string TokenExpireHoursCacheKey = "security:token_expire_hours";
+
     /// <summary>验证码缓存前缀 + 有效期（文档：TTL 5 分钟）</summary>
     private const string CaptchaCachePrefix = "captcha:";
     private static readonly TimeSpan CaptchaTtl = TimeSpan.FromMinutes(5);
@@ -71,6 +78,7 @@ public class SecurityService : ISecurityService
     private readonly CurrentUserService _currentUser;
     private readonly JwtService _jwtService;
     private readonly ISysConfigService _configService;
+    private readonly ISessionRegistry _sessionRegistry;
 
     public SecurityService(
         AppDbContext db,
@@ -79,7 +87,8 @@ public class SecurityService : ISecurityService
         ISysLoginLogRepository loginLogRepository,
         CurrentUserService currentUser,
         JwtService jwtService,
-        ISysConfigService configService)
+        ISysConfigService configService,
+        ISessionRegistry sessionRegistry)
     {
         _db = db;
         _cache = cache;
@@ -88,6 +97,7 @@ public class SecurityService : ISecurityService
         _currentUser = currentUser;
         _jwtService = jwtService;
         _configService = configService;
+        _sessionRegistry = sessionRegistry;
     }
 
     // ============================================================
@@ -101,20 +111,31 @@ public class SecurityService : ISecurityService
         var result = await _configService.GetValueAsync(ConfigKey);
         var value = result.Data?.ConfigValue;
 
+        SecurityConfigDto config;
         if (string.IsNullOrWhiteSpace(value))
-            return new SecurityConfigDto();   // 无记录返回默认值
+        {
+            config = new SecurityConfigDto();   // 无记录返回默认值
+        }
+        else
+        {
+            try
+            {
+                config = JsonSerializer.Deserialize<SecurityConfigDto>(value,
+                             new JsonSerializerOptions { PropertyNameCaseInsensitive = true })
+                         ?? new SecurityConfigDto();
+            }
+            catch
+            {
+                // 配置值损坏时降级为默认值，不阻塞登录
+                config = new SecurityConfigDto();
+            }
+        }
 
-        try
-        {
-            return JsonSerializer.Deserialize<SecurityConfigDto>(value,
-                       new JsonSerializerOptions { PropertyNameCaseInsensitive = true })
-                   ?? new SecurityConfigDto();
-        }
-        catch
-        {
-            // 配置值损坏时降级为默认值，不阻塞登录
-            return new SecurityConfigDto();
-        }
+        // 同步一份 Token 有效期到进程内缓存，供单例 JwtService 签发令牌时读取
+        _cache.Set(TokenExpireHoursCacheKey,
+            config.TokenExpireHours > 0 ? config.TokenExpireHours : 24);
+
+        return config;
     }
 
     /// <inheritdoc/>
@@ -126,6 +147,10 @@ public class SecurityService : ISecurityService
         // 走系统配置服务写入：落库后自动失效 config:security.login 缓存，
         // 否则下一次读取会拿到修改前的旧策略（验证码开关、锁定阈值都会不生效）
         await _configService.SetValueAsync(ConfigKey, json, builtIn: true);
+
+        // 立即同步 Token 有效期缓存，保存后下一次登录即按新值签发
+        _cache.Set(TokenExpireHoursCacheKey,
+            dto.TokenExpireHours > 0 ? dto.TokenExpireHours : 24);
 
         // 操作日志由 [OperationLog] 过滤器统一异步采集（Controller 已标记），此处不再重复记录
         return ApiResponse<bool>.Success(true, "安全策略配置已保存");
@@ -225,6 +250,8 @@ public class SecurityService : ISecurityService
             return "密码必须包含小写字母";
         if (config.PasswordRequireDigit && !password.Any(char.IsDigit))
             return "密码必须包含数字";
+        if (config.PasswordRequireSpecial && !password.Any(c => !char.IsLetterOrDigit(c)))
+            return "密码必须包含特殊字符（如 !@#$%^&*）";
         return null;
     }
 
@@ -248,26 +275,32 @@ public class SecurityService : ISecurityService
 
         if (user != null)
         {
-            // 原子自增失败计数（UPDATE ... SET fail_count = fail_count + 1），并发安全
-            await _db.SysUsers
-                .Where(u => u.Id == user.Id)
-                .ExecuteUpdateAsync(s => s.SetProperty(u => u.FailCount, u => u.FailCount + 1));
-
-            // 重新读取计数判断是否达到锁定阈值
-            var failCount = await _db.SysUsers.AsNoTracking()
-                .Where(u => u.Id == user.Id)
-                .Select(u => u.FailCount)
-                .FirstAsync();
-
-            if (failCount >= config.MaxLoginAttempts)
+            // 锁定期内再次尝试：只写登录日志，不再累加失败次数、也不重新计算 lock_until。
+            // 否则攻击者反复尝试会在每次达到阈值时刷新锁定截止时间，等于无限延长锁定。
+            var stillLocked = user.LockUntil.HasValue && user.LockUntil.Value > DateTime.Now;
+            if (!stillLocked)
             {
-                var lockUntil = DateTime.Now.AddMinutes(config.LockDurationMinutes);
+                // 原子自增失败计数（UPDATE ... SET fail_count = fail_count + 1），并发安全
                 await _db.SysUsers
                     .Where(u => u.Id == user.Id)
-                    .ExecuteUpdateAsync(s => s
-                        .SetProperty(u => u.LockUntil, lockUntil)
-                        .SetProperty(u => u.FailCount, 0));
-                failReason = $"{reason}，连续失败 {failCount} 次，账号已锁定 {config.LockDurationMinutes} 分钟";
+                    .ExecuteUpdateAsync(s => s.SetProperty(u => u.FailCount, u => u.FailCount + 1));
+
+                // 重新读取计数判断是否达到锁定阈值
+                var failCount = await _db.SysUsers.AsNoTracking()
+                    .Where(u => u.Id == user.Id)
+                    .Select(u => u.FailCount)
+                    .FirstAsync();
+
+                if (failCount >= config.MaxLoginAttempts)
+                {
+                    var lockUntil = DateTime.Now.AddMinutes(config.LockDurationMinutes);
+                    await _db.SysUsers
+                        .Where(u => u.Id == user.Id)
+                        .ExecuteUpdateAsync(s => s
+                            .SetProperty(u => u.LockUntil, lockUntil)
+                            .SetProperty(u => u.FailCount, 0));
+                    failReason = $"{reason}，连续失败 {failCount} 次，账号已锁定 {config.LockDurationMinutes} 分钟";
+                }
             }
         }
 
@@ -360,7 +393,25 @@ public class SecurityService : ISecurityService
         if (lockMinutes != null)
             return ApiResponse<TokenResultDto>.Fail($"账号已锁定，请 {lockMinutes} 分钟后重新登录", 403);
 
-        var (access, refresh, expiresIn, _) = _jwtService.GenerateTokenPair(user);
+        var config = await GetConfigAsync();
+
+        // 密码有效期校验（0 = 永不过期）
+        if (config.PasswordValidDays > 0)
+        {
+            var lastChanged = user.PwdUpdateTime ?? user.CreateTime;
+            if (lastChanged.AddDays(config.PasswordValidDays) <= DateTime.Now)
+                return ApiResponse<TokenResultDto>.Fail(
+                    $"密码已超过 {config.PasswordValidDays} 天有效期，请联系管理员重置密码", 403);
+        }
+
+        // 刷新同样登记会话：并发登录关闭时，旧访问令牌会被新会话踢下线
+        var sessionId = Guid.NewGuid().ToString("N");
+        var (access, refresh, expiresIn, _) = _jwtService.GenerateTokenPair(user, sessionId);
+        _sessionRegistry.Register(user.Id, sessionId, config.AllowConcurrentLogin,
+            config.MaxConcurrentSessions, TimeSpan.FromMinutes(config.TokenExpireHours > 0
+                ? config.TokenExpireHours * 60
+                : (expiresIn / 60)));
+
         return ApiResponse<TokenResultDto>.Success(new TokenResultDto
         {
             AccessToken = access,
@@ -399,7 +450,8 @@ public class SecurityService : ISecurityService
             .Where(u => u.Id == userId)
             .ExecuteUpdateAsync(s => s
                 .SetProperty(u => u.Password, newHash)
-                .SetProperty(u => u.PwdVersion, newPwdVersion));
+                .SetProperty(u => u.PwdVersion, newPwdVersion)
+                .SetProperty(u => u.PwdUpdateTime, DateTime.Now));
 
         // 立即失效该用户的密码版本缓存（中间件缓存 60 秒，主动清除保证改密即刻下线）
         _cache.Remove($"pwd_version:{userId}");

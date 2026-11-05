@@ -50,6 +50,17 @@ SET @sql = IF(@cnt=0,
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
 -- ------------------------------------------------------------
+-- 3.1) sys_user 补 pwd_update_time（密码最后修改时间，用于"密码有效期"策略）
+--      为空时登录校验回退使用 create_time，保证存量账号行为不变
+-- ------------------------------------------------------------
+SET @cnt = (SELECT COUNT(*) FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA=@db AND TABLE_NAME='sys_user' AND COLUMN_NAME='pwd_update_time');
+SET @sql = IF(@cnt=0,
+  'ALTER TABLE `sys_user` ADD COLUMN `pwd_update_time` DATETIME NULL DEFAULT NULL COMMENT ''密码最后修改时间（密码有效期策略用，NULL 回退创建时间）'' AFTER `pwd_version`',
+  'SELECT ''sys_user.pwd_update_time 已存在，跳过'' AS skip_reason');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+-- ------------------------------------------------------------
 -- 4) 新建 sys_config（系统配置表：登录安全策略等键值对配置）
 -- ------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS `sys_config` (

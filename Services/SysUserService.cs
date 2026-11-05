@@ -19,6 +19,7 @@ public class SysUserService : ISysUserService
     private readonly IMapper _mapper;
     private readonly IMemoryCache _cache;
     private readonly IPermissionService _permissionService;
+    private readonly ISecurityService _securityService;
 
     public SysUserService(
         ISysUserRepository userRepository,
@@ -26,7 +27,8 @@ public class SysUserService : ISysUserService
         CurrentUserService currentUser,
         IMapper mapper,
         IMemoryCache cache,
-        IPermissionService permissionService)
+        IPermissionService permissionService,
+        ISecurityService securityService)
     {
         _userRepository = userRepository;
         _roleRepository = roleRepository;
@@ -34,6 +36,7 @@ public class SysUserService : ISysUserService
         _mapper = mapper;
         _cache = cache;
         _permissionService = permissionService;
+        _securityService = securityService;
     }
 
     /// <summary>
@@ -65,13 +68,21 @@ public class SysUserService : ISysUserService
             return ApiResponse<object>.Fail("登录账号已存在");
         }
 
-        // 2. DTO → Entity（密码字段在 MappingProfile 中被 Ignore，需单独赋值）
+        // 2. 密码强度校验（按登录安全策略：长度/大小写/数字/特殊字符）
+        var strengthError = await _securityService.ValidatePasswordStrengthAsync(dto.Password);
+        if (strengthError != null)
+        {
+            return ApiResponse<object>.Fail(strengthError);
+        }
+
+        // 3. DTO → Entity（密码字段在 MappingProfile 中被 Ignore，需单独赋值）
         var user = _mapper.Map<SysUser>(dto);
 
-        // 3. 明文密码 BCrypt 加密后入库
+        // 4. 明文密码 BCrypt 加密后入库
         user.Password = BCrypt.Net.BCrypt.HashPassword(dto.Password);
+        user.PwdUpdateTime = DateTime.Now;
 
-        // 4. 保存
+        // 5. 保存
         await _userRepository.AddAsync(user);
         await _userRepository.SaveChangesAsync();
 
@@ -218,9 +229,17 @@ public class SysUserService : ISysUserService
             return ApiResponse<object>.Fail("无权限重置用户密码", 403);
         }
 
-        // 4. BCrypt(cost=12) 加密 + 密码版本号 +1（强制该用户重新登录）
+        // 4. 新密码强度校验（与"修改密码"使用同一套登录安全策略）
+        var strengthError = await _securityService.ValidatePasswordStrengthAsync(dto.Password);
+        if (strengthError != null)
+        {
+            return ApiResponse<object>.Fail(strengthError);
+        }
+
+        // 5. BCrypt(cost=12) 加密 + 密码版本号 +1（强制该用户重新登录）
         user.Password = BCrypt.Net.BCrypt.HashPassword(dto.Password, workFactor: 12);
         user.PwdVersion = user.PwdVersion + 1;
+        user.PwdUpdateTime = DateTime.Now;
         await _userRepository.SaveChangesAsync();
 
         // 4. 立即失效密码版本缓存（中间件缓存 60 秒，主动清除保证重置即刻下线）
