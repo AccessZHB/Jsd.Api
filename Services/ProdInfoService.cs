@@ -339,6 +339,11 @@ public class ProdInfoService : IProdInfoService
     /// </summary>
     public async Task<ApiResponse<object>> CreateAsync(ProdInfoCreateDto dto)
     {
+        // 请求体显式传 null 时兜底为空集合（无规格商品允许 skus 为空）
+        dto.SpecItems ??= new List<SpecItemDto>();
+        dto.Skus ??= new List<ProdSkuCreateDto>();
+        dto.Images ??= new List<ProdImageSaveDto>();
+
         // 1. 关联校验
         var relationError = await ValidateRelationsAsync(dto.ProdCategoryId, dto.SupplierId);
         if (relationError != null)
@@ -388,6 +393,12 @@ public class ProdInfoService : IProdInfoService
     /// </summary>
     public async Task<ApiResponse<object>> UpdateAsync(ProdInfoUpdateDto dto)
     {
+        // 请求体显式传 null 时兜底为空集合：
+        // 空 SKU 集合代表"清空该商品全部 SKU"，后续 RemoveRange 会删掉所有旧 SKU。
+        dto.SpecItems ??= new List<SpecItemDto>();
+        dto.Skus ??= new List<ProdSkuCreateDto>();
+        dto.Images ??= new List<ProdImageSaveDto>();
+
         var product = await _db.ProdInfos.FirstOrDefaultAsync(p => p.Id == dto.Id);
         if (product == null)
         {
