@@ -130,8 +130,8 @@ public class PurchaseOrderService : IPurchaseOrderService
             UpdateTime = order.UpdateTime
         };
 
-        // 各明细"已入库数量" = 已确认入库单中对应行的实收之和
-        var receivedByItem = await GetConfirmedReceivedAsync();
+        // 各明细"已入库数量" = 已确认入库单中对应行的实收之和（按本单明细过滤，不扫全表）
+        var receivedByItem = await GetConfirmedReceivedAsync(order.Items.Select(i => i.Id).ToList());
 
         // 批量回填物料展示信息：SKU 名称 / 规格 / 所属商品ID / 单位
         // （前端编辑与入库单都需要 prod_info_id 才能在"商品→SKU"级联下拉里正确回显）
@@ -175,13 +175,23 @@ public class PurchaseOrderService : IPurchaseOrderService
         return ApiResponse<PurchaseOrderDetailDto>.Success(dto);
     }
 
-    /// <summary>统计"已确认入库单"中各采购订单明细行的已收数量</summary>
-    private async Task<Dictionary<long, decimal>> GetConfirmedReceivedAsync()
+    /// <summary>
+    /// 统计"已确认入库单"中指定采购订单明细行的已收数量。
+    /// 必须按本单明细ID过滤：早期实现统计全表后在字典里按需取值，
+    /// 订单明细量一大就会变成全表扫描 + 无谓内存占用。
+    /// </summary>
+    private async Task<Dictionary<long, decimal>> GetConfirmedReceivedAsync(List<long> orderItemIds)
     {
+        if (orderItemIds.Count == 0)
+        {
+            return new Dictionary<long, decimal>();
+        }
+
         var confirmed = await (
             from bi in _db.PurInboundItems
             join ib in _db.PurInbounds on bi.InboundId equals ib.Id
             where ib.Status == (int)InboundStatus.Confirmed
+                  && orderItemIds.Contains(bi.OrderItemId)
             select new { OrderItemId = bi.OrderItemId, bi.ActualQuantity }
         ).ToListAsync();
 
@@ -355,24 +365,28 @@ public class PurchaseOrderService : IPurchaseOrderService
 
     public async Task<ApiResponse<object>> CancelAsync(long id)
     {
-        var order = await _db.PurOrders.FirstOrDefaultAsync(o => o.Id == id);
-        if (order == null)
+        // 并发保护：用条件更新抢占「草稿/审批中 → 已作废」，
+        // 两个管理员同时点作废时只有一个能成功，另一个得到明确提示。
+        var affected = await _db.PurOrders
+            .Where(o => o.Id == id
+                        && (o.Status == (int)PurchaseOrderStatus.Draft
+                            || o.Status == (int)PurchaseOrderStatus.Reviewing))
+            .ExecuteUpdateAsync(s => s.SetProperty(o => o.Status, (int)PurchaseOrderStatus.Cancelled));
+
+        if (affected == 1)
+        {
+            // 操作日志：依赖尚未建设的"操作日志模块"，此处仅置状态；
+            // 待审计模块建成后在此写入（操作人/时间/前后状态）。
+            return ApiResponse<object>.Success(new { id }, "采购订单已作废");
+        }
+
+        var exists = await _db.PurOrders.AsNoTracking().AnyAsync(o => o.Id == id);
+        if (!exists)
         {
             return ApiResponse<object>.Fail("采购订单不存在", 404);
         }
 
-        if (order.Status != (int)PurchaseOrderStatus.Draft
-            && order.Status != (int)PurchaseOrderStatus.Reviewing)
-        {
-            return ApiResponse<object>.Fail("仅草稿/审批中状态的采购订单可作废");
-        }
-
-        order.Status = (int)PurchaseOrderStatus.Cancelled;
-        await _db.SaveChangesAsync();
-
-        // 操作日志：依赖尚未建设的"操作日志模块"，此处仅置状态；
-        // 待审计模块建成后在此写入（操作人/时间/前后状态）。
-        return ApiResponse<object>.Success(new { id }, "采购订单已作废");
+        return ApiResponse<object>.Fail("采购订单状态已变更（仅草稿/审批中可作废），请刷新后重试");
     }
 
     // ============================================================
@@ -385,22 +399,26 @@ public class PurchaseOrderService : IPurchaseOrderService
     /// </summary>
     public async Task<ApiResponse<object>> ConfirmAsync(long id)
     {
-        var order = await _db.PurOrders.FirstOrDefaultAsync(o => o.Id == id);
-        if (order == null)
+        // 并发保护：条件更新抢占「草稿/审批中 → 待入库」，
+        // 避免两个请求同时确认导致重复生成入库单据。
+        var affected = await _db.PurOrders
+            .Where(o => o.Id == id
+                        && (o.Status == (int)PurchaseOrderStatus.Draft
+                            || o.Status == (int)PurchaseOrderStatus.Reviewing))
+            .ExecuteUpdateAsync(s => s.SetProperty(o => o.Status, (int)PurchaseOrderStatus.Approved));
+
+        if (affected == 1)
+        {
+            return ApiResponse<object>.Success(new { id }, "订单已确认，可开始入库");
+        }
+
+        var exists = await _db.PurOrders.AsNoTracking().AnyAsync(o => o.Id == id);
+        if (!exists)
         {
             return ApiResponse<object>.Fail("采购订单不存在", 404);
         }
 
-        if (order.Status != (int)PurchaseOrderStatus.Draft
-            && order.Status != (int)PurchaseOrderStatus.Reviewing)
-        {
-            return ApiResponse<object>.Fail("仅草稿状态的采购订单可确认");
-        }
-
-        order.Status = (int)PurchaseOrderStatus.Approved;
-        await _db.SaveChangesAsync();
-
-        return ApiResponse<object>.Success(new { id }, "订单已确认，可开始入库");
+        return ApiResponse<object>.Fail("采购订单状态已变更（仅草稿状态可确认），请刷新后重试");
     }
 
     // ============================================================

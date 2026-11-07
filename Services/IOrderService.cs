@@ -24,7 +24,8 @@ public interface IOrderService
 {
     /// <summary>分页查询订单列表（主表信息 + 商品总数）</summary>
     Task<ApiResponse<PagedResult<OrderListDto>>> GetPagedListAsync(
-        string? orderNo, int? orderStatus, DateTime? startTime, DateTime? endTime, int page, int pageSize);
+        string? orderNo, int? orderStatus, DateTime? startTime, DateTime? endTime,
+        long? buyerId, string? buyerKeyword, string? receiverKeyword, int page, int pageSize);
 
     /// <summary>订单详情（主表 + 明细）</summary>
     Task<ApiResponse<OrderDetailDto>> GetDetailAsync(long id);
@@ -47,9 +48,13 @@ public interface IOrderService
     /// <summary>修改商家备注（仅 待付款 可改）</summary>
     Task<ApiResponse<object>> UpdateRemarkAsync(long id, OrderRemarkDto dto);
 
-    /// <summary>订单导出（占位实现：不生成真实文件，返回提示与命中条数）</summary>
-    Task<ApiResponse<OrderExportDto>> ExportAsync(
-        string? orderNo, int? orderStatus, DateTime? startTime, DateTime? endTime);
+    /// <summary>
+    /// 订单导出（NPOI 生成 .xlsx）。
+    /// 返回文件字节 + 文件名；由 Controller 以文件流下发，前端直接下载。
+    /// </summary>
+    Task<(byte[] Content, string FileName)> ExportAsync(
+        string? orderNo, int? orderStatus, DateTime? startTime, DateTime? endTime,
+        string? buyerKeyword, string? receiverKeyword);
 
     /// <summary>确认订单页预计算：重算金额 + 逐 SKU 库存校验（不改库，会员隔离）</summary>
     Task<ApiResponse<OrderPreCalculateResultDto>> PreCalculateAsync(OrderPreCalculateDto dto);

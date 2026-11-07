@@ -1,3 +1,4 @@
+using Jsd.Api.Attributes;
 using Jsd.Api.Models.Common;
 using Jsd.Api.Models.Purchase;
 using Jsd.Api.Services;
@@ -26,6 +27,7 @@ public class InboundController : ControllerBase
 
     /// <summary>分页查询入库单列表</summary>
     [HttpGet("page")]
+    [Permission(PurchasePermissions.InboundList)]
     public async Task<ApiResponse<PagedResult<InboundListDto>>> GetPage([FromQuery] InboundQueryDto query)
     {
         return await _inboundService.GetPagedListAsync(query);
@@ -33,6 +35,7 @@ public class InboundController : ControllerBase
 
     /// <summary>入库单详情（主表 + 明细，明细带物料名/采购单价）</summary>
     [HttpGet("{id:long}/detail")]
+    [Permission(PurchasePermissions.InboundList)]
     public async Task<ApiResponse<InboundDetailDto>> GetDetail(long id)
     {
         return await _inboundService.GetDetailAsync(id);
@@ -40,6 +43,7 @@ public class InboundController : ControllerBase
 
     /// <summary>按采购订单查询其下所有入库单</summary>
     [HttpGet("by-order/{orderId:long}")]
+    [Permission(PurchasePermissions.InboundList)]
     public async Task<ApiResponse<List<InboundListDto>>> GetByOrder(long orderId)
     {
         return await _inboundService.GetByOrderAsync(orderId);
@@ -47,6 +51,7 @@ public class InboundController : ControllerBase
 
     /// <summary>创建入库单（以采定入核心入口）</summary>
     [HttpPost("create")]
+    [Permission(PurchasePermissions.InboundCreate)]
     public async Task<ApiResponse<object>> Create([FromBody] CreateInboundDto dto)
     {
         try
@@ -61,6 +66,7 @@ public class InboundController : ControllerBase
 
     /// <summary>确认入库（增库存 + 写日志 + 生成应付 + 推进订单状态）</summary>
     [HttpPost("{id:long}/confirm")]
+    [Permission(PurchasePermissions.InboundConfirm)]
     public async Task<ApiResponse<object>> Confirm(long id)
     {
         try

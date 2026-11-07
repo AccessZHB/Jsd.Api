@@ -18,7 +18,9 @@ public class OrderRepository : Repository<TrxOrder>, IOrderRepository
     /// 列表不带出明细（明细数量由 Service 用 group by 一次性统计，避免 N+1）
     /// </summary>
     public async Task<(List<TrxOrder> Items, int Total)> GetPagedListAsync(
-        string? orderNo, int? orderStatus, DateTime? startTime, DateTime? endTime, int page, int pageSize)
+        string? orderNo, int? orderStatus, DateTime? startTime, DateTime? endTime,
+        long? buyerId, string? buyerKeyword, string? receiverKeyword,
+        int page, int pageSize)
     {
         var query = Db.TrxOrders
             .AsNoTracking()
@@ -28,6 +30,27 @@ public class OrderRepository : Repository<TrxOrder>, IOrderRepository
         if (!string.IsNullOrWhiteSpace(orderNo))
         {
             query = query.Where(o => o.OrderNo.Contains(orderNo));
+        }
+
+        // 买家ID精确筛选
+        if (buyerId.HasValue)
+        {
+            query = query.Where(o => o.BuyerId == buyerId.Value);
+        }
+
+        // 买家名称模糊筛选（按 mem_member.name，子查询避免额外 join 污染分页）
+        if (!string.IsNullOrWhiteSpace(buyerKeyword))
+        {
+            var kw = buyerKeyword.Trim();
+            query = query.Where(o => Db.MemMembers
+                .Any(m => m.Id == o.BuyerId && m.IsDeleted == 0 && m.Name.Contains(kw)));
+        }
+
+        // 收货人姓名 / 手机号模糊筛选
+        if (!string.IsNullOrWhiteSpace(receiverKeyword))
+        {
+            var kw = receiverKeyword.Trim();
+            query = query.Where(o => o.ReceiverName.Contains(kw) || o.ReceiverPhone.Contains(kw));
         }
 
         // 订单状态筛选

@@ -1,3 +1,4 @@
+using Jsd.Api.Attributes;
 using Jsd.Api.Models.Common;
 using Jsd.Api.Models.Purchase;
 using Jsd.Api.Services;
@@ -29,6 +30,7 @@ public class PurchaseOrderController : ControllerBase
 
     /// <summary>分页查询采购订单列表</summary>
     [HttpGet("page")]
+    [Permission(PurchasePermissions.OrderList)]
     public async Task<ApiResponse<PagedResult<PurchaseOrderListDto>>> GetPage([FromQuery] PurchaseOrderQueryDto query)
     {
         return await _orderService.GetPagedListAsync(query);
@@ -43,6 +45,7 @@ public class PurchaseOrderController : ControllerBase
 
     /// <summary>创建采购订单（草稿）</summary>
     [HttpPost("create")]
+    [Permission(PurchasePermissions.OrderCreate)]
     public async Task<ApiResponse<PurchaseOrderCreateResult>> Create([FromBody] CreatePurchaseOrderDto dto)
     {
         try
@@ -57,6 +60,7 @@ public class PurchaseOrderController : ControllerBase
 
     /// <summary>编辑采购订单（仅草稿）</summary>
     [HttpPut("{id:long}")]
+    [Permission(PurchasePermissions.OrderUpdate)]
     public async Task<ApiResponse<object>> Update(long id, [FromBody] UpdatePurchaseOrderDto dto)
     {
         try
@@ -74,6 +78,7 @@ public class PurchaseOrderController : ControllerBase
     /// 【本模块无审核环节】确认后订单即可开入库单，不记录审批人/审批时间。
     /// </summary>
     [HttpPost("{id:long}/confirm")]
+    [Permission(PurchasePermissions.OrderConfirm)]
     public async Task<ApiResponse<object>> Confirm(long id)
     {
         try
@@ -88,6 +93,7 @@ public class PurchaseOrderController : ControllerBase
 
     /// <summary>作废采购订单（草稿 → 作废）</summary>
     [HttpPost("{id:long}/cancel")]
+    [Permission(PurchasePermissions.OrderCancel)]
     public async Task<ApiResponse<object>> Cancel(long id)
     {
         try
@@ -102,6 +108,7 @@ public class PurchaseOrderController : ControllerBase
 
     /// <summary>根据库存预警自动生成采购订单</summary>
     [HttpPost("auto-create")]
+    [Permission(PurchasePermissions.OrderAutoCreate)]
     public async Task<ApiResponse<List<PurchaseOrderCreateResult>>> AutoCreate([FromBody] AutoCreateOrderDto dto)
     {
         try

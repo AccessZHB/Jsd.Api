@@ -1,3 +1,4 @@
+using Jsd.Api.Attributes;
 using Jsd.Api.Models.Common;
 using Jsd.Api.Models.Purchase;
 using Jsd.Api.Services;
@@ -26,6 +27,7 @@ public class PayableController : ControllerBase
 
     /// <summary>分页查询应付账款列表</summary>
     [HttpGet("page")]
+    [Permission(PurchasePermissions.PayableList)]
     public async Task<ApiResponse<PagedResult<PayableListDto>>> GetPage([FromQuery] PayableQueryDto query)
     {
         return await _payableService.GetPagedListAsync(query);
@@ -33,6 +35,7 @@ public class PayableController : ControllerBase
 
     /// <summary>应付账款详情（含关联采购订单号）</summary>
     [HttpGet("{id:long}/detail")]
+    [Permission(PurchasePermissions.PayableList)]
     public async Task<ApiResponse<PayableDetailDto>> GetDetail(long id)
     {
         return await _payableService.GetDetailAsync(id);
@@ -40,6 +43,7 @@ public class PayableController : ControllerBase
 
     /// <summary>按供应商查询应付账款</summary>
     [HttpGet("by-supplier/{supplierId:long}")]
+    [Permission(PurchasePermissions.PayableList)]
     public async Task<ApiResponse<List<PayableListDto>>> GetBySupplier(long supplierId, [FromQuery] int? status)
     {
         return await _payableService.GetBySupplierAsync(supplierId, status);
@@ -47,6 +51,7 @@ public class PayableController : ControllerBase
 
     /// <summary>付款核销（paid += 金额，unpaid -= 金额，状态 0/1/2）</summary>
     [HttpPost("{id:long}/pay")]
+    [Permission(PurchasePermissions.PayablePay)]
     public async Task<ApiResponse<object>> Pay(long id, [FromBody] PayPaymentDto dto)
     {
         try

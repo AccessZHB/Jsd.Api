@@ -3436,3 +3436,129 @@ SET @sql = IF(@cnt=0,
   'ALTER TABLE `sys_user` ADD COLUMN `pwd_update_time` DATETIME NULL DEFAULT NULL COMMENT ''密码最后修改时间（密码有效期策略用，NULL 回退创建时间）'' AFTER `pwd_version`',
   'SELECT ''sys_user.pwd_update_time 已存在，跳过'' AS skip_reason');
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+
+
+INSERT INTO `sys_menu`
+  (`id`, `parent_id`, `menu_name`, `path`, `component`, `icon`,
+   `sort_order`, `menu_type`, `permission`, `visible`, `status`)
+VALUES
+  -- 2. 子菜单：采购订单（挂在 401 下）
+  (402,   401, '采购订单', 'purchase-order', 'procurement/order/index',  'Document',     1, 2, 'purchase:order:list',   1, 1),
+  -- 3. 采购订单页面 6 个按钮权限
+   (40201, 402, '查询', NULL, NULL, NULL, 1, 3, 'purchase:order:list',        1, 1),
+  (40202, 402, '新增', NULL, NULL, NULL, 2, 3, 'purchase:order:create',      1, 1),
+  (40203, 402, '编辑', NULL, NULL, NULL, 3, 3, 'purchase:order:update',      1, 1),
+  (40204, 402, '作废', NULL, NULL, NULL, 4, 3, 'purchase:order:cancel',      1, 1),
+  (40205, 402, '确认', NULL, NULL, NULL, 5, 3, 'purchase:order:confirm',     1, 1),
+  (40206, 402, '预警生成', NULL, NULL, NULL, 6, 3, 'purchase:order:auto-create', 1, 1)
+ON DUPLICATE KEY UPDATE
+  `parent_id`  = VALUES(`parent_id`),
+  `menu_name`  = VALUES(`menu_name`),
+  `path`       = VALUES(`path`),
+  `component`  = VALUES(`component`),
+  `icon`       = VALUES(`icon`),
+  `sort_order` = VALUES(`sort_order`),
+  `menu_type`  = VALUES(`menu_type`),
+  `permission` = VALUES(`permission`),
+  `visible`    = VALUES(`visible`),
+  `status`     = VALUES(`status`);
+  
+  
+  
+  INSERT IGNORE INTO `sys_role_menu` (`role_id`, `menu_id`) VALUES
+  (1, 401),
+  (1, 402),
+  (1, 40201),
+  (1, 40202),
+  (1, 40203),
+  (1, 40204),
+  (1, 40205),
+  (1, 40206);
+  
+  
+  
+  select * from sys_menu  where id = 40206
+
+  
+  INSERT INTO `sys_menu`
+  (`id`, `parent_id`, `menu_name`, `path`, `component`, `icon`,
+   `sort_order`, `menu_type`, `permission`, `visible`, `status`)
+VALUES
+  -- 采购入库(403) 的按钮
+  (40301, 403, '新增入库', 'purchase:inbound:create',  NULL, NULL, 1, 3, 'purchase:inbound:create',  1, 1),
+  (40302, 403, '确认入库', 'purchase:inbound:confirm', NULL, NULL, 2, 3, 'purchase:inbound:confirm', 1, 1),
+  -- 应付账款(404) 的按钮
+  (40401, 404, '付款核销', 'purchase:payable:pay',     NULL, NULL, 1, 3, 'purchase:payable:pay',     1, 1)
+ON DUPLICATE KEY UPDATE
+  `parent_id`  = VALUES(`parent_id`),
+  `menu_name`  = VALUES(`menu_name`),
+  `permission` = VALUES(`permission`),
+  `menu_type`  = VALUES(`menu_type`),
+  `visible`    = VALUES(`visible`),
+  `status`     = VALUES(`status`);
+
+INSERT IGNORE INTO `sys_role_menu` (`role_id`, `menu_id`) VALUES
+  (1, 40301), (1, 40302), (1, 40401);
+
+  INSERT INTO `sys_menu` (`id`,`parent_id`,`menu_name`,`path`,`component`,`icon`,`sort_order`,`menu_type`,`permission`,`visible`,`status`) VALUES
+ (40301,403,'新增入库','purchase:inbound:create', NULL,NULL,1,3,'purchase:inbound:create', 1,1),
+ (40302,403,'确认入库','purchase:inbound:confirm',NULL,NULL,2,3,'purchase:inbound:confirm',1,1),
+ (40401,404,'付款核销','purchase:payable:pay',     NULL,NULL,1,3,'purchase:payable:pay',    1,1)
+ON DUPLICATE KEY UPDATE `menu_name`=VALUES(`menu_name`), `permission`=VALUES(`permission`);
+
+INSERT IGNORE INTO `sys_role_menu` (`role_id`,`menu_id`) VALUES (1,40301),(1,40302),(1,40401);
+
+
+select * from sys_menu where parent_id in (403,404) 
+select * from sys_role_menu where menu_id in (40301,40302,40401)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+-- ============================================================
+-- 订单/采购订单 复合索引优化（MySQL 8.0+）
+-- 执行前请确认实例版本；建议在业务低峰期执行（大表会锁/耗时）
+-- ============================================================
+
+-- ---------- trx_order ----------
+-- 1) 状态 + 下单时间：列表最常用组合（order_status=? AND create_time BETWEEN ...）
+ALTER TABLE `trx_order`
+  ADD INDEX `idx_trx_order_status_ctime` (`order_status`, `create_time`);
+
+-- 2) 买家 + 下单时间：按客户查单（buyer_id=? AND create_time BETWEEN ...）
+ALTER TABLE `trx_order`
+  ADD INDEX `idx_trx_order_buyer_ctime` (`buyer_id`, `create_time`);
+
+-- 3) 买家 + 状态：客服按客户筛状态（buyer_id=? AND order_status=?）
+ALTER TABLE `trx_order`
+  ADD INDEX `idx_trx_order_buyer_status` (`buyer_id`, `order_status`);
+
+-- 可选：若逻辑删除数据占比很小（绝大多数 is_deleted=0），不建议把它放索引首列；
+--       若历史删除量很大，可改为 (is_deleted, order_status, create_time) 并删除第 1 条。
+
+-- ---------- pur_order ----------
+-- 4) 供应商 + 状态 + 下单日期：采购列表主查询
+ALTER TABLE `pur_order`
+  ADD INDEX `idx_pur_order_supplier_status_date` (`supplier_id`, `status`, `order_date`);
+
+-- 5) 状态 + 下单日期：不带供应商时按状态+时间筛
+ALTER TABLE `pur_order`
+  ADD INDEX `idx_pur_order_status_date` (`status`, `order_date`);
+
+-- ---------- 可选清理（确认新索引生效并观察一段时间后再做）----------
+-- 避免索引冗余：复合索引已能覆盖单列前缀查询
+-- ALTER TABLE `trx_order`  DROP INDEX `idx_order_status`;
+-- ALTER TABLE `pur_order`  DROP INDEX `idx_status`;
+-- ALTER TABLE `pur_order`  DROP INDEX `idx_supplier_id`;   -- 被 idx_pur_order_supplier_status_date 左前缀覆盖

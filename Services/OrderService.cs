@@ -5,6 +5,8 @@ using Jsd.Api.Models.Order;
 using Jsd.Api.Models.Price;
 using Jsd.Api.Repositories;
 using Microsoft.EntityFrameworkCore;
+using NPOI.SS.UserModel;
+using NPOI.XSSF.UserModel;
 
 namespace Jsd.Api.Services;
 
@@ -99,15 +101,32 @@ public class OrderService : IOrderService
     /// 商品总数用一次 group by 统计当前页所有订单，避免逐单查询产生 N+1。
     /// </summary>
     public async Task<ApiResponse<PagedResult<OrderListDto>>> GetPagedListAsync(
-        string? orderNo, int? orderStatus, DateTime? startTime, DateTime? endTime, int page, int pageSize)
+        string? orderNo, int? orderStatus, DateTime? startTime, DateTime? endTime,
+        long? buyerId, string? buyerKeyword, string? receiverKeyword,
+        int page, int pageSize)
     {
         if (page < 1) page = 1;
         if (pageSize < 1 || pageSize > 100) pageSize = 10;
 
         var (orders, total) = await _orderRepository.GetPagedListAsync(
-            orderNo, orderStatus, startTime, endTime, page, pageSize);
+            orderNo, orderStatus, startTime, endTime, buyerId, buyerKeyword, receiverKeyword, page, pageSize);
 
         var list = orders.Select(MapToListDto).ToList();
+
+        // 批量回填买家名称，避免前端显示"买家#ID"（一次查询，不做 N+1）
+        var buyerIds = list.Select(o => o.BuyerId).Distinct().ToList();
+        if (buyerIds.Count > 0)
+        {
+            var buyerNames = await _db.MemMembers.AsNoTracking()
+                .Where(m => buyerIds.Contains(m.Id))
+                .Select(m => new { m.Id, m.Name })
+                .ToDictionaryAsync(x => x.Id, x => x.Name);
+
+            foreach (var dto in list)
+            {
+                dto.BuyerName = buyerNames.GetValueOrDefault(dto.BuyerId);
+            }
+        }
 
         // 一次性统计当前页每张订单的明细数（商品种类数）与商品件数合计
         var orderIds = list.Select(o => o.Id).ToList();
@@ -282,6 +301,10 @@ public class OrderService : IOrderService
 
         var dto = new OrderDetailDto();
         FillListDto(dto, order);
+        dto.BuyerName = await _db.MemMembers.AsNoTracking()
+            .Where(m => m.Id == order.BuyerId)
+            .Select(m => m.Name)
+            .FirstOrDefaultAsync();
         dto.ItemCount = order.Items.Count;
         dto.TotalQuantity = order.Items.Sum(i => i.Quantity);
         dto.Items = order.Items.Select(MapToItemDto).ToList();
@@ -551,6 +574,13 @@ public class OrderService : IOrderService
         await using var tx = await _db.Database.BeginTransactionAsync();
         try
         {
+            // 并发保护：用条件更新抢占「待付款 → 已支付」，抢不到说明已被其他请求处理
+            if (!await TryTransitionAsync(id, OrderStatuses.Pending, OrderStatuses.Paid))
+            {
+                await tx.RollbackAsync();
+                return ApiResponse<object>.Fail("订单状态已变更，请刷新后重试");
+            }
+
             // 【阶段八】余额支付：与 SubmitAsync 统一加锁顺序 —— 先锁会员余额行，再碰 SKU。
             // 两条链路若顺序相反（一条 会员→SKU、一条 SKU→会员），并发时会在 InnoDB 里
             // 互相等待对方的行锁而死锁（1213），只能靠数据库回滚一方，用户看到 500。
@@ -716,6 +746,13 @@ public class OrderService : IOrderService
         await using var tx = await _db.Database.BeginTransactionAsync();
         try
         {
+            // 并发保护：用条件更新抢占「已支付 → 已发货」，防止重复发货
+            if (!await TryTransitionAsync(id, OrderStatuses.Paid, OrderStatuses.Shipped))
+            {
+                await tx.RollbackAsync();
+                return ApiResponse<object>.Fail("订单状态已变更，请刷新后重试");
+            }
+
             order.ShipCompany = dto.ShipCompany;
             order.ShipNo = dto.ShipNo;
             // 物流面单照片：覆盖写入（允许重新发货时更新/清空）
@@ -778,6 +815,13 @@ public class OrderService : IOrderService
         await using var tx = await _db.Database.BeginTransactionAsync();
         try
         {
+            // 并发保护：用条件更新抢占「已发货 → 已完成」，防止销量被重复累加
+            if (!await TryTransitionAsync(id, OrderStatuses.Shipped, OrderStatuses.Completed))
+            {
+                await tx.RollbackAsync();
+                return ApiResponse<object>.Fail("订单状态已变更，请刷新后重试");
+            }
+
             // 批量取出涉及 SKU（跟踪状态，直接改字段后 SaveChanges 提交）
             var skuIds = items.Select(i => i.SkuId).Distinct().ToList();
             var skus = await _db.ProdSkus.Where(s => skuIds.Contains(s.Id)).ToListAsync();
@@ -844,6 +888,13 @@ public class OrderService : IOrderService
         await using var tx = await _db.Database.BeginTransactionAsync();
         try
         {
+            // 并发保护：用条件更新抢占「待付款 → 已关闭」，避免与支付并发时双双成功
+            if (!await TryTransitionAsync(id, OrderStatuses.Pending, OrderStatuses.Closed))
+            {
+                await tx.RollbackAsync();
+                return ApiResponse<object>.Fail("订单状态已变更，请刷新后重试");
+            }
+
             order.OrderStatus = OrderStatuses.Closed;
             order.CloseReason = dto.CloseReason ?? string.Empty;
             order.CloseTime = DateTime.Now;
@@ -1248,30 +1299,85 @@ public class OrderService : IOrderService
     }
 
     // ============================================================
-    // 9. 订单导出（占位实现）
+    // 9. 订单导出（NPOI 生成真实 Excel）
     // ============================================================
 
     /// <summary>
-    /// 订单导出【占位实现】。
-    /// 复用与列表完全相同的筛选条件统计命中条数，暂不生成真实 Excel：
-    /// 后续接入 EPPlus / MiniExcel 后，只需在此生成文件并把地址赋给 ExportUrl，
-    /// 接口签名与前端调用方式均无需变动。
+    /// 订单导出：按与列表完全相同的筛选条件生成 .xlsx 文件。
+    /// 单次导出上限 5000 行，避免全表导出把服务内存与数据库打满。
+    /// 金额一律取库中快照字段（pay_amount / total_amount 是下单时持久化的值），不在此重算。
     /// </summary>
-    public async Task<ApiResponse<OrderExportDto>> ExportAsync(
-        string? orderNo, int? orderStatus, DateTime? startTime, DateTime? endTime)
+    public async Task<(byte[] Content, string FileName)> ExportAsync(
+        string? orderNo, int? orderStatus, DateTime? startTime, DateTime? endTime,
+        string? buyerKeyword, string? receiverKeyword)
     {
-        // 复用列表仓储的筛选逻辑，pageSize=1 只为拿 total
+        // 先取命中总数，再一次性拉取（上限 5000）
         var (_, total) = await _orderRepository.GetPagedListAsync(
-            orderNo, orderStatus, startTime, endTime, 1, 1);
+            orderNo, orderStatus, startTime, endTime, null, buyerKeyword, receiverKeyword, 1, 1);
+        var take = Math.Max(1, Math.Min(total, 5000));
+        var (orders, _) = await _orderRepository.GetPagedListAsync(
+            orderNo, orderStatus, startTime, endTime, null, buyerKeyword, receiverKeyword, 1, take);
 
-        var dto = new OrderExportDto
+        var list = orders.Select(MapToListDto).ToList();
+
+        // 买家名称批量回填（单次查询，不做 N+1）
+        var buyerIds = list.Select(o => o.BuyerId).Distinct().ToList();
+        if (buyerIds.Count > 0)
         {
-            ExportUrl = null,   // 占位：真实实现后填入文件下载地址
-            Message = "订单导出功能开发中，敬请期待（当前为占位接口）",
-            Total = total
-        };
+            var buyerNames = await _db.MemMembers.AsNoTracking()
+                .Where(m => buyerIds.Contains(m.Id))
+                .Select(m => new { m.Id, m.Name })
+                .ToDictionaryAsync(x => x.Id, x => x.Name);
+            foreach (var dto in list)
+            {
+                dto.BuyerName = buyerNames.GetValueOrDefault(dto.BuyerId);
+            }
+        }
 
-        return ApiResponse<OrderExportDto>.Success(dto);
+        IWorkbook workbook = new XSSFWorkbook();
+        var sheet = workbook.CreateSheet("订单列表");
+
+        var headerStyle = workbook.CreateCellStyle();
+        var font = workbook.CreateFont();
+        font.IsBold = true;
+        headerStyle.SetFont(font);
+
+        var headers = new[]
+        {
+            "订单号", "买家", "收货人", "收货人电话", "商品种类", "商品件数",
+            "商品总额", "优惠金额", "运费", "实付金额", "订单状态", "支付方式", "下单时间"
+        };
+        var headerRow = sheet.CreateRow(0);
+        for (var i = 0; i < headers.Length; i++)
+        {
+            var cell = headerRow.CreateCell(i);
+            cell.SetCellValue(headers[i]);
+            cell.CellStyle = headerStyle;
+        }
+
+        for (var r = 0; r < list.Count; r++)
+        {
+            var row = sheet.CreateRow(r + 1);
+            var o = list[r];
+            row.CreateCell(0).SetCellValue(o.OrderNo);
+            row.CreateCell(1).SetCellValue(o.BuyerName ?? $"买家#{o.BuyerId}");
+            row.CreateCell(2).SetCellValue(o.ReceiverName);
+            row.CreateCell(3).SetCellValue(o.ReceiverPhone);
+            row.CreateCell(4).SetCellValue(o.ItemCount);
+            row.CreateCell(5).SetCellValue(o.TotalQuantity);
+            row.CreateCell(6).SetCellValue(o.TotalAmount.ToString("0.00"));
+            row.CreateCell(7).SetCellValue(o.DiscountAmount.ToString("0.00"));
+            row.CreateCell(8).SetCellValue(o.FreightAmount.ToString("0.00"));
+            row.CreateCell(9).SetCellValue(o.PayAmount.ToString("0.00"));
+            row.CreateCell(10).SetCellValue(o.OrderStatusName ?? string.Empty);
+            row.CreateCell(11).SetCellValue(o.PayMethodName ?? string.Empty);
+            row.CreateCell(12).SetCellValue(o.CreateTime.ToString("yyyy-MM-dd HH:mm:ss"));
+        }
+
+        using var ms = new MemoryStream();
+        workbook.Write(ms, leaveOpen: true);
+        var fileName = $"订单列表_{DateTime.Now:yyyyMMddHHmmss}.xlsx";
+        return (ms.ToArray(), fileName);
     }
 
     // ============================================================
@@ -1572,12 +1678,26 @@ public class OrderService : IOrderService
         for (var attempt = 0; attempt < MaxCasRetry; attempt++)
         {
             // 取当前库存：优先用本事务已更新的缓存值，否则从库实时读取
-            var current = stockCache.TryGetValue(skuId, out var cached)
-                ? cached
-                : await _db.ProdSkus.AsNoTracking()
+            int current;
+            if (stockCache.TryGetValue(skuId, out var cached))
+            {
+                current = cached;
+            }
+            else
+            {
+                // 历史订单可能引用了已被删除的 SKU：此处必须给出明确业务提示，
+                // 不能直接抛 LINQ 的 "Sequence contains no elements"。
+                var stock = await _db.ProdSkus.AsNoTracking()
                     .Where(s => s.Id == skuId)
-                    .Select(s => s.Stock)
-                    .FirstAsync();
+                    .Select(s => (int?)s.Stock)
+                    .FirstOrDefaultAsync();
+                if (stock == null)
+                {
+                    throw new InvalidOperationException(
+                        $"商品SKU不存在或已被删除（sku_id={skuId}），无法扣减库存；请联系管理员处理该历史订单");
+                }
+                current = stock.Value;
+            }
 
             var after = current + delta;
 
@@ -1616,6 +1736,19 @@ public class OrderService : IOrderService
         }
 
         throw new InvalidOperationException($"SKU(sku_id={skuId}) 库存更新并发冲突，请重试");
+    }
+
+    /// <summary>
+    /// 原子状态流转：仅当订单当前状态为 from 时更新为 to，返回是否抢到流转权。
+    /// 必须在事务内调用：条件更新命中的行锁会保持到事务提交，
+    /// 从而避免并发支付/关闭/发货/完成同时通过状态校验后相互覆盖。
+    /// </summary>
+    private async Task<bool> TryTransitionAsync(long orderId, int from, int to)
+    {
+        var affected = await _db.TrxOrders
+            .Where(o => o.Id == orderId && o.OrderStatus == from)
+            .ExecuteUpdateAsync(s => s.SetProperty(o => o.OrderStatus, to));
+        return affected == 1;
     }
 
     /// <summary>

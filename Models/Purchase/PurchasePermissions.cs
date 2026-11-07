@@ -1,9 +1,7 @@
 namespace Jsd.Api.Models.Purchase;
 
 /// <summary>
-/// 采购管理模块 —— 权限标识（与前端 v-permission 对应）。
-/// 后端 Controller 当前统一用 [Authorize] 鉴权（与订单/库存等模块一致），
-/// 以下常量供前端菜单/按钮权限配置与未来精细化策略使用。
+/// 采购管理模块 —— 权限标识（与前端 v-permission、后端 [Permission] 对应）。
 /// </summary>
 public static class PurchasePermissions
 {

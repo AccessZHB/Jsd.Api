@@ -112,6 +112,9 @@ public class OrderListDto
     /// <summary>买家ID</summary>
     public long BuyerId { get; set; }
 
+    /// <summary>买家名称（mem_member.name，Service 回填，避免前端只显示裸 ID）</summary>
+    public string? BuyerName { get; set; }
+
     // ===== 收货信息 =====
     public string ReceiverName { get; set; } = string.Empty;
     public string ReceiverPhone { get; set; } = string.Empty;

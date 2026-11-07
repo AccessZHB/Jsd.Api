@@ -63,11 +63,15 @@ public class OrderController : ControllerBase
         [FromQuery] int? orderStatus,
         [FromQuery] DateTime? startTime,
         [FromQuery] DateTime? endTime,
+        [FromQuery] long? buyerId,
+        [FromQuery] string? buyerKeyword,
+        [FromQuery] string? receiverKeyword,
         [FromQuery] int page = 1,
         [FromQuery] int pageSize = 10)
     {
         return await _orderService.GetPagedListAsync(
-            orderNo, orderStatus, startTime, endTime, page, pageSize);
+            orderNo, orderStatus, startTime, endTime,
+            buyerId, buyerKeyword, receiverKeyword, page, pageSize);
     }
 
     /// <summary>
@@ -175,21 +179,27 @@ public class OrderController : ControllerBase
     // ============================================================
 
     /// <summary>
-    /// 5. 订单导出（权限：order:export）—— 占位实现
-    /// 接收与列表查询相同的筛选参数，目前不生成真实 Excel，
-    /// 仅返回提示信息与命中的订单条数（ExportUrl 为 null）。
+    /// 5. 订单导出（权限：order:export）
+    /// 按与列表完全相同的筛选条件生成 .xlsx（NPOI），以文件流直接下发，前端触发下载。
     /// 示例：GET /api/order/export?orderStatus=3&amp;startTime=2026-09-01
     /// </summary>
     [HttpGet("export")]
     [Permission(OrderPermissions.Export)]
-    [ProducesResponseType(typeof(ApiResponse<OrderExportDto>), StatusCodes.Status200OK)]
-    public async Task<ApiResponse<OrderExportDto>> Export(
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    public async Task<IActionResult> Export(
         [FromQuery] string? orderNo,
         [FromQuery] int? orderStatus,
         [FromQuery] DateTime? startTime,
-        [FromQuery] DateTime? endTime)
+        [FromQuery] DateTime? endTime,
+        [FromQuery] string? buyerKeyword,
+        [FromQuery] string? receiverKeyword)
     {
-        return await _orderService.ExportAsync(orderNo, orderStatus, startTime, endTime);
+        var (content, fileName) = await _orderService.ExportAsync(
+            orderNo, orderStatus, startTime, endTime, buyerKeyword, receiverKeyword);
+        return File(
+            content,
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            fileName);
     }
 
     // ============================================================
@@ -203,6 +213,7 @@ public class OrderController : ControllerBase
     /// 【注意】创建阶段不扣库存，库存扣减发生在支付时。
     /// </summary>
     [HttpPost]
+    [Permission(OrderPermissions.Create)]
     [ProducesResponseType(typeof(ApiResponse<object>), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ApiResponse<object>), StatusCodes.Status400BadRequest)]
     public async Task<ApiResponse<object>> Create([FromBody] OrderCreateDto dto)
@@ -225,6 +236,7 @@ public class OrderController : ControllerBase
     /// 示例：PUT /api/order/1/pay   body: { "payMethod": 1 }
     /// </summary>
     [HttpPut("{id:long}/pay")]
+    [Permission(OrderPermissions.Pay)]
     [ProducesResponseType(typeof(ApiResponse<object>), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ApiResponse<object>), StatusCodes.Status400BadRequest)]
     [ProducesResponseType(typeof(ApiResponse<object>), StatusCodes.Status404NotFound)]
@@ -247,6 +259,7 @@ public class OrderController : ControllerBase
     /// 注意：此步不再扣库存（库存已在支付时扣减）。
     /// </summary>
     [HttpPut("{id:long}/complete")]
+    [Permission(OrderPermissions.Complete)]
     [ProducesResponseType(typeof(ApiResponse<object>), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ApiResponse<object>), StatusCodes.Status400BadRequest)]
     [ProducesResponseType(typeof(ApiResponse<object>), StatusCodes.Status404NotFound)]
