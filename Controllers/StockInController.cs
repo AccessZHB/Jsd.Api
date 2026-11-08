@@ -1,3 +1,4 @@
+using Jsd.Api.Attributes;
 using Jsd.Api.Models.Common;
 using Jsd.Api.Models.StockIn;
 using Jsd.Api.Services;
@@ -34,6 +35,7 @@ public class StockInController : ControllerBase
     /// <param name="page">页码，默认1</param>
     /// <param name="pageSize">每页条数，默认10</param>
     [HttpGet("list")]
+    [Permission("stock_in:list")]
     [ProducesResponseType(typeof(ApiResponse<PagedResult<StockInListDto>>), StatusCodes.Status200OK)]
     public async Task<ApiResponse<PagedResult<StockInListDto>>> GetList(
         [FromQuery] string? keyword,
@@ -54,6 +56,7 @@ public class StockInController : ControllerBase
     /// </summary>
     /// <param name="id">入库单ID</param>
     [HttpGet("detail/{id:long}")]
+    [Permission("stock_in:list")]
     [ProducesResponseType(typeof(ApiResponse<StockInDetailDto>), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ApiResponse<StockInDetailDto>), StatusCodes.Status404NotFound)]
     public async Task<ApiResponse<StockInDetailDto>> GetDetail(long id)
@@ -65,6 +68,7 @@ public class StockInController : ControllerBase
     /// 3. 创建入库单（写主表+明细，增加 SKU 库存，写库存变动日志；创建即完成）
     /// </summary>
     [HttpPost("create")]
+    [Permission("stock_in:add")]
     [ProducesResponseType(typeof(ApiResponse<object>), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ApiResponse<object>), StatusCodes.Status400BadRequest)]
     public async Task<ApiResponse<object>> Create([FromBody] StockInCreateDto dto)
@@ -87,6 +91,7 @@ public class StockInController : ControllerBase
     /// </summary>
     /// <param name="id">入库单ID</param>
     [HttpPut("update/{id:long}")]
+    [Permission("stock_in:edit")]
     [ProducesResponseType(typeof(ApiResponse<object>), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ApiResponse<object>), StatusCodes.Status400BadRequest)]
     [ProducesResponseType(typeof(ApiResponse<object>), StatusCodes.Status404NotFound)]
@@ -108,6 +113,7 @@ public class StockInController : ControllerBase
     /// </summary>
     /// <param name="id">入库单ID</param>
     [HttpDelete("delete/{id:long}")]
+    [Permission("stock_in:delete")]
     [ProducesResponseType(typeof(ApiResponse<object>), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ApiResponse<object>), StatusCodes.Status404NotFound)]
     public async Task<ApiResponse<object>> Delete(long id)

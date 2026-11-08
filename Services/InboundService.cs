@@ -6,6 +6,7 @@ using Jsd.Api.Models.Purchase;
 using Jsd.Api.Repositories;
 using Jsd.Api.Validators;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 
 namespace Jsd.Api.Services;
 
@@ -21,8 +22,10 @@ namespace Jsd.Api.Services;
 ///     4) 自动生成 pur_payable（应付总额 = Σ 实收数量 × 订单明细单价）；
 ///     5) 推进采购订单状态：全部明细收满 → 4-已结清；否则 → 3-部分入库。
 ///
-/// 【库存一致性】库存只落在 prod_sku.stock；同一事务内同一 SKU 用缓存字典保证
-/// before/after 顺序累计，与 StockInService 同一套写法。
+/// 【库存一致性】确认入库时，状态抢占、超量校验、库存增加、流水与应付全部在同一个事务内完成：
+///   1) 先用条件更新 status 0→1 抢占入库单，受影响行=0 说明已被确认，直接拒绝，避免重复确认；
+///   2) 再对采购订单行加 FOR UPDATE 行锁，串行化同一订单的并发确认，锁内重新做超量校验；
+///   3) 库存使用原子表达式 stock = stock + n，避免“先查后写”造成并发丢更新。
 /// </summary>
 public class InboundService : IInboundService
 {
@@ -314,23 +317,7 @@ public class InboundService : IInboundService
             throw new InvalidOperationException("采购订单状态异常，无法确认入库");
         }
 
-        // 重做超量拦截（针对其他已确认入库单，排除本单）
-        var confirmedByItem = await GetConfirmedReceivedByItemAsync(inbound.OrderId, inbound.Id);
-        foreach (var it in inbound.Items)
-        {
-            var oi = order.Items.FirstOrDefault(oi => oi.Id == it.OrderItemId);
-            if (oi == null)
-            {
-                throw new InvalidOperationException($"入库明细行 {it.OrderItemId} 对应的采购订单明细不存在");
-            }
-
-            var received = confirmedByItem.TryGetValue(it.OrderItemId, out var r) ? r : 0;
-            if (received + it.ActualQuantity > oi.Quantity)
-            {
-                throw new InvalidOperationException(
-                    $"物料(明细行{it.OrderItemId})超出未入库数量，无法确认：已入{received}，本次{it.ActualQuantity}，订单{oi.Quantity}");
-            }
-        }
+        // 超量拦截已移入事务内（拿到采购订单行锁后重新校验，避免并发确认绕过）
 
         var opUser = !string.IsNullOrEmpty(_currentUser.UserName)
             ? _currentUser.UserName
@@ -339,8 +326,38 @@ public class InboundService : IInboundService
         await using var tx = await _db.Database.BeginTransactionAsync();
         try
         {
-            // 1) 增加库存 + 写变动日志；同一 SKU 用缓存保证顺序累计
-            var skuCache = new Dictionary<long, ProdSku>();
+            // 1) 事务内条件更新抢占入库单状态：只有“待确认”才能改成功，
+            //    并发/重复点击时后到者受影响行=0，直接拒绝，避免库存与应付双记。
+            var claimed = await _db.PurInbounds
+                .Where(i => i.Id == id && i.Status == (int)InboundStatus.Pending)
+                .ExecuteUpdateAsync(s => s.SetProperty(p => p.Status, (int)InboundStatus.Confirmed));
+            if (claimed == 0)
+            {
+                await tx.RollbackAsync();
+                return ApiResponse<object>.Fail("仅待确认的入库单可确认");
+            }
+
+            // 2) 锁定采购订单行，串行化同一采购订单的并发确认，锁内重新做超量校验
+            await LockPurchaseOrderRowAsync(inbound.OrderId);
+
+            var confirmedByItem = await GetConfirmedReceivedByItemAsync(inbound.OrderId, inbound.Id);
+            foreach (var it in inbound.Items)
+            {
+                var oi = order.Items.FirstOrDefault(oi => oi.Id == it.OrderItemId);
+                if (oi == null)
+                {
+                    throw new InvalidOperationException($"入库明细行 {it.OrderItemId} 对应的采购订单明细不存在");
+                }
+
+                var received = confirmedByItem.TryGetValue(it.OrderItemId, out var r) ? r : 0;
+                if (received + it.ActualQuantity > oi.Quantity)
+                {
+                    throw new InvalidOperationException(
+                        $"物料(明细行{it.OrderItemId})超出未入库数量，无法确认：已入{received}，本次{it.ActualQuantity}，订单{oi.Quantity}");
+                }
+            }
+
+            // 3) 原子增加库存 + 写变动日志
             var logList = new List<LogStockLog>();
             var payableTotal = 0m;
 
@@ -353,19 +370,17 @@ public class InboundService : IInboundService
             foreach (var it in inbound.Items)
             {
                 var oi = order.Items.First(oi => oi.Id == it.OrderItemId);
-                var sku = await GetTrackedSkuAsync(it.MaterialId, skuCache);
-
-                var beforeStock = sku.Stock;
-                sku.Stock = beforeStock + (int)Math.Round(it.ActualQuantity, 0, MidpointRounding.AwayFromZero);
+                var addQty = (int)Math.Round(it.ActualQuantity, 0, MidpointRounding.AwayFromZero);
+                var afterStock = await AddStockAsync(it.MaterialId, addQty);
 
                 logList.Add(new LogStockLog
                 {
                     ProdInfoId = skuInfoMap.TryGetValue(it.MaterialId, out var pid) ? pid : 0,
                     SkuId = it.MaterialId,
                     ChangeType = ChangeTypeIn,
-                    ChangeQty = (int)Math.Round(it.ActualQuantity, 0, MidpointRounding.AwayFromZero),
-                    BeforeStock = beforeStock,
-                    AfterStock = sku.Stock,
+                    ChangeQty = addQty,
+                    BeforeStock = afterStock - addQty,
+                    AfterStock = afterStock,
                     RefType = "pur_inbound",
                     RefId = inbound.Id,
                     Remark = $"采购入库 {inbound.InboundNo}",
@@ -375,7 +390,7 @@ public class InboundService : IInboundService
                 payableTotal = decimal.Round(payableTotal + it.ActualQuantity * oi.UnitPrice, 2, MidpointRounding.AwayFromZero);
             }
 
-            // 2) 自动生成应付账款
+            // 4) 自动生成应付账款
             if (payableTotal > 0)
             {
                 var payableNo = await PurchaseNumberHelper.GenerateAsync(
@@ -395,8 +410,9 @@ public class InboundService : IInboundService
                 });
             }
 
-            // 3) 推进采购订单状态：全部明细收满 → 已结清(4)，否则 → 部分入库(3)
-            var newReceived = await GetConfirmedReceivedByItemAsync(inbound.OrderId, null);
+            // 5) 推进采购订单状态：全部明细收满 → 已结清(4)，否则 → 部分入库(3)
+            //    注意排除本单：状态已在事务内抢占为已入库，若不排除会与本单实收数重复累计。
+            var newReceived = await GetConfirmedReceivedByItemAsync(inbound.OrderId, inbound.Id);
             foreach (var it in inbound.Items)
             {
                 if (newReceived.ContainsKey(it.OrderItemId))
@@ -414,9 +430,6 @@ public class InboundService : IInboundService
             order.Status = allDone
                 ? (int)PurchaseOrderStatus.Completed
                 : (int)PurchaseOrderStatus.PartialIn;
-
-            // 4) 入库单置为已入库
-            inbound.Status = (int)InboundStatus.Confirmed;
 
             await _db.LogStockLogs.AddRangeAsync(logList);
             await _db.SaveChangesAsync();
@@ -455,19 +468,49 @@ public class InboundService : IInboundService
                    .ToDictionary(g => g.Key, g => g.Sum(x => x.ActualQuantity));
     }
 
-    /// <summary>获取被 ChangeTracker 跟踪的 SKU 实体（与 StockInService 同款写法）</summary>
-    private async Task<ProdSku> GetTrackedSkuAsync(long skuId, Dictionary<long, ProdSku> cache)
+    /// <summary>
+    /// 锁定采购订单行（SELECT ... FOR UPDATE），使同一采购订单的并发确认串行化。
+    /// 必须在已开启的数据库事务内调用，锁随事务提交/回滚释放。
+    /// </summary>
+    private async Task LockPurchaseOrderRowAsync(long orderId)
     {
-        if (cache.TryGetValue(skuId, out var cached))
+        var conn = _db.Database.GetDbConnection();
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT id FROM pur_order WHERE id = @id FOR UPDATE";
+        var p = cmd.CreateParameter();
+        p.ParameterName = "@id";
+        p.Value = orderId;
+        cmd.Parameters.Add(p);
+        cmd.Transaction = _db.Database.CurrentTransaction?.GetDbTransaction();
+
+        var result = await cmd.ExecuteScalarAsync();
+        if (result == null || result == DBNull.Value)
         {
-            return cached;
+            throw new InvalidOperationException("关联的采购订单不存在");
+        }
+    }
+
+    /// <summary>
+    /// 原子增加 SKU 库存：stock = stock + qty，返回增加后的库存值。
+    /// 不使用“先查后写”的绝对赋值，避免并发入库相互覆盖。
+    /// </summary>
+    private async Task<int> AddStockAsync(long skuId, int qty)
+    {
+        if (qty != 0)
+        {
+            var affected = await _db.ProdSkus
+                .Where(s => s.Id == skuId)
+                .ExecuteUpdateAsync(s => s.SetProperty(p => p.Stock, p => p.Stock + qty));
+            if (affected == 0)
+            {
+                throw new InvalidOperationException($"SKU不存在（sku_id={skuId}）");
+            }
         }
 
-        var sku = await _db.ProdSkus.FirstOrDefaultAsync(s => s.Id == skuId)
-                 ?? throw new InvalidOperationException($"SKU不存在（sku_id={skuId}）");
-
-        cache[skuId] = sku;
-        return sku;
+        return await _db.ProdSkus.AsNoTracking()
+            .Where(s => s.Id == skuId)
+            .Select(s => s.Stock)
+            .FirstAsync();
     }
 
     /// <summary>实体 → 列表 DTO（供应商名经订单联查）</summary>

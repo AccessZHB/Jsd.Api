@@ -1,3 +1,4 @@
+using Jsd.Api.Attributes;
 using Jsd.Api.Models.Common;
 using Jsd.Api.Models.StockCheck;
 using Jsd.Api.Services;
@@ -35,6 +36,7 @@ public class StockCheckController : ControllerBase
     /// <param name="page">页码，默认1</param>
     /// <param name="pageSize">每页条数，默认10</param>
     [HttpGet]
+    [Permission(StockCheckPermissions.List)]
     [ProducesResponseType(typeof(ApiResponse<PagedResult<StockCheckListDto>>), StatusCodes.Status200OK)]
     public async Task<ApiResponse<PagedResult<StockCheckListDto>>> GetList(
         [FromQuery] string? keyword,
@@ -54,6 +56,7 @@ public class StockCheckController : ControllerBase
     /// </summary>
     /// <param name="id">盘点单ID</param>
     [HttpGet("{id:long}")]
+    [Permission(StockCheckPermissions.Detail)]
     [ProducesResponseType(typeof(ApiResponse<StockCheckDetailDto>), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ApiResponse<StockCheckDetailDto>), StatusCodes.Status404NotFound)]
     public async Task<ApiResponse<StockCheckDetailDto>> GetDetail(long id)
@@ -65,6 +68,7 @@ public class StockCheckController : ControllerBase
     /// 3. 创建盘点单（生成单号 + 带入系统库存快照 + 写变动日志，状态=盘点中）（权限：stock_check:add）
     /// </summary>
     [HttpPost]
+    [Permission(StockCheckPermissions.Add)]
     [ProducesResponseType(typeof(ApiResponse<object>), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ApiResponse<object>), StatusCodes.Status400BadRequest)]
     public async Task<ApiResponse<object>> Create([FromBody] StockCheckCreateDto dto)
@@ -87,6 +91,7 @@ public class StockCheckController : ControllerBase
     /// </summary>
     /// <param name="id">盘点单ID</param>
     [HttpPut("{id:long}")]
+    [Permission(StockCheckPermissions.Edit)]
     [ProducesResponseType(typeof(ApiResponse<object>), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ApiResponse<object>), StatusCodes.Status400BadRequest)]
     [ProducesResponseType(typeof(ApiResponse<object>), StatusCodes.Status404NotFound)]
@@ -108,6 +113,7 @@ public class StockCheckController : ControllerBase
     /// </summary>
     /// <param name="id">盘点单ID</param>
     [HttpDelete("{id:long}")]
+    [Permission(StockCheckPermissions.Delete)]
     [ProducesResponseType(typeof(ApiResponse<object>), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ApiResponse<object>), StatusCodes.Status404NotFound)]
     public async Task<ApiResponse<object>> Delete(long id)

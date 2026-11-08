@@ -1,3 +1,4 @@
+using Jsd.Api.Attributes;
 using Jsd.Api.Models.Common;
 using Jsd.Api.Models.StockWarning;
 using Jsd.Api.Services;
@@ -45,6 +46,7 @@ public class StockWarningController : ControllerBase
     /// <param name="page">页码，默认1</param>
     /// <param name="pageSize">每页条数，默认10</param>
     [HttpGet]
+    [Permission(StockWarningPermissions.List)]
     [ProducesResponseType(typeof(ApiResponse<PagedResult<StockWarningItemDto>>), StatusCodes.Status200OK)]
     public async Task<ApiResponse<PagedResult<StockWarningItemDto>>> GetList(
         [FromQuery] long? prodInfoId,
@@ -63,6 +65,7 @@ public class StockWarningController : ControllerBase
     /// </summary>
     /// <param name="id">预警配置ID</param>
     [HttpGet("{id:long}")]
+    [Permission(StockWarningPermissions.Edit)]
     [ProducesResponseType(typeof(ApiResponse<StockWarningItemDto>), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ApiResponse<StockWarningItemDto>), StatusCodes.Status404NotFound)]
     public async Task<ApiResponse<StockWarningItemDto>> GetDetail(long id)
@@ -75,6 +78,7 @@ public class StockWarningController : ControllerBase
     /// 含参数校验：商品存在性、SKU 归属、阈值非负、同商品同SKU不重复。
     /// </summary>
     [HttpPost]
+    [Permission(StockWarningPermissions.Edit)]
     [ProducesResponseType(typeof(ApiResponse<object>), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ApiResponse<object>), StatusCodes.Status400BadRequest)]
     public async Task<ApiResponse<object>> Create([FromBody] StockWarningSaveDto dto)
@@ -96,6 +100,7 @@ public class StockWarningController : ControllerBase
     /// id 放在请求体中（与 spec 的 POST/PUT /api/stock-warning 一致）。
     /// </summary>
     [HttpPut]
+    [Permission(StockWarningPermissions.Edit)]
     [ProducesResponseType(typeof(ApiResponse<object>), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ApiResponse<object>), StatusCodes.Status400BadRequest)]
     [ProducesResponseType(typeof(ApiResponse<object>), StatusCodes.Status404NotFound)]
@@ -118,6 +123,7 @@ public class StockWarningController : ControllerBase
     /// </summary>
     /// <param name="id">预警配置ID</param>
     [HttpPut("enable/{id:long}")]
+    [Permission(StockWarningPermissions.Enable)]
     [ProducesResponseType(typeof(ApiResponse<object>), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ApiResponse<object>), StatusCodes.Status404NotFound)]
     public async Task<ApiResponse<object>> SetEnable(long id, [FromBody] StockWarningEnableDto? dto)
@@ -132,6 +138,7 @@ public class StockWarningController : ControllerBase
     /// </summary>
     /// <param name="id">预警配置ID</param>
     [HttpDelete("{id:long}")]
+    [Permission(StockWarningPermissions.Edit)]
     [ProducesResponseType(typeof(ApiResponse<object>), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ApiResponse<object>), StatusCodes.Status404NotFound)]
     public async Task<ApiResponse<object>> Delete(long id)

@@ -1,3 +1,4 @@
+using Jsd.Api.Attributes;
 using Jsd.Api.Models.Common;
 using Jsd.Api.Models.StockQuery;
 using Jsd.Api.Services;
@@ -37,6 +38,7 @@ public class StockQueryController : ControllerBase
     /// 示例：GET /api/stockQuery/overview
     /// </summary>
     [HttpGet("overview")]
+    [Permission(StockQueryPermissions.Overview)]
     [ProducesResponseType(typeof(ApiResponse<StockOverviewDto>), StatusCodes.Status200OK)]
     public async Task<ApiResponse<StockOverviewDto>> GetOverview()
     {
@@ -55,6 +57,7 @@ public class StockQueryController : ControllerBase
     /// <param name="page">页码，默认1</param>
     /// <param name="pageSize">每页条数，默认10</param>
     [HttpGet("detail")]
+    [Permission(StockQueryPermissions.Detail)]
     [ProducesResponseType(typeof(ApiResponse<PagedResult<StockDetailItemDto>>), StatusCodes.Status200OK)]
     public async Task<ApiResponse<PagedResult<StockDetailItemDto>>> GetDetail(
         [FromQuery] string? keyword,
@@ -81,6 +84,7 @@ public class StockQueryController : ControllerBase
     /// <param name="page">页码，默认1</param>
     /// <param name="pageSize">每页条数，默认10</param>
     [HttpGet("log")]
+    [Permission(StockQueryPermissions.Log)]
     [ProducesResponseType(typeof(ApiResponse<PagedResult<StockLogItemDto>>), StatusCodes.Status200OK)]
     public async Task<ApiResponse<PagedResult<StockLogItemDto>>> GetLog(
         [FromQuery] int? changeType,

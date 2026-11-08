@@ -3,6 +3,7 @@ using Jsd.Api.Models.Common;
 using Jsd.Api.Models.StockCheck;
 using Jsd.Api.Repositories;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 
 namespace Jsd.Api.Services;
 
@@ -12,11 +13,11 @@ namespace Jsd.Api.Services;
 /// 1. 创建/完成/删除全部使用 IDbContextTransaction 事务，主表、明细、库存、变动日志要么全成功要么全回滚；
 /// 2. 创建时把每个 SKU 的当前 prod_sku.stock 作为 system_stock 快照写入明细，
 ///    状态置 盘点中(0)，并写一条"快照"变动日志（change_qty=0，审计用）；
-/// 3. 完成盘点时录入实盘 actual_stock，diff_qty = actual - system，按差值用【乐观锁 CAS】
-///    调整 prod_sku.stock，并写"盘点调整"变动日志，状态置 已完成(1)；
-/// 4. 删除仅允许 盘点中(0) 单据，且不调整库存（未实盘、未改动库存）；
-/// 5. 库存调整采用乐观锁 CAS（prod_sku 无并发令牌列，不改表结构）：
-///    UPDATE prod_sku SET stock=@after WHERE id=@id AND stock=@current，受影响行=0 重试（最多3次）；
+/// 3. 完成盘点时录入实盘 actual_stock，以“确认那一刻的实时库存”为系统数（对 SKU 行加 FOR UPDATE 锁），
+///    diff_qty = actual - 实时库存，并将 prod_sku.stock 直接置为实盘数；不再使用创建时的旧快照做差异，
+///    避免盘点期间发生的出入库被重复计入盈亏；
+/// 4. 完成前用条件更新 status 0→1 抢占盘点单，防止并发/重复提交导致库存被多次调整；
+/// 5. 删除仅允许 盘点中(0) 单据，且不调整库存（未实盘、未改动库存）；
 /// 6. 变动日志 log_stock_log.change_type=3（盘点调整），ref_type='check'；
 /// 7. 本系统无审核环节，盘点单"已完成"即终态。
 /// </summary>
@@ -31,8 +32,6 @@ public class StockCheckService : IStockCheckService
     /// <summary>盘点单号前缀（PD = PanDian）</summary>
     private const string NoPrefix = "PD";
 
-    /// <summary>乐观锁 CAS 最大重试次数</summary>
-    private const int MaxCasRetry = 3;
 
     private readonly AppDbContext _db;
     private readonly ILogStockCheckRepository _checkRepository;
@@ -250,8 +249,8 @@ public class StockCheckService : IStockCheckService
     // ============================================================
 
     /// <summary>
-    /// 完成盘点：仅 盘点中(0) 单据可调用。逐 SKU 计算盈亏 = 实盘 - 系统，按差值乐观锁调整库存，
-    /// 写盘点调整日志，状态置 已完成(1)，全程事务。
+    /// 完成盘点：仅 盘点中(0) 单据可调用。逐 SKU 以“确认时的实时库存”为系统数计算盈亏，
+    /// 按实盘数直接回写库存，写盘点调整日志，状态置 已完成(1)，全程事务。
     /// </summary>
     public async Task<ApiResponse<object>> CompleteAsync(long id, StockCheckUpdateDto dto)
     {
@@ -293,29 +292,58 @@ public class StockCheckService : IStockCheckService
 
         // 4. 开启事务
         var logList = new List<LogStockLog>();
-        var stockCache = new Dictionary<long, int>();
         await using var tx = await _db.Database.BeginTransactionAsync();
         try
         {
+            // 4.1 抢占盘点单状态：仅“盘点中”可完成；并发/重复提交时后到者受影响行=0
+            var claimed = await _db.LogStockChecks
+                .Where(c => c.Id == id && c.Status == 0)
+                .ExecuteUpdateAsync(s => s.SetProperty(p => p.Status, 1));
+            if (claimed == 0)
+            {
+                await tx.RollbackAsync();
+                return ApiResponse<object>.Fail("仅盘点中单据可完成盘点（已完成单据不可重复操作）");
+            }
+
             foreach (var input in dto.Items)
             {
                 var item = existingBySku[input.SkuId];
-                var diff = input.ActualStock - item.SystemStock; // 盈亏 = 实盘 - 系统
 
-                // 在跟踪实例上直接更新明细字段（SaveChanges 一并提交）
+                // 4.2 锁定 SKU 行并读取“确认那一刻”的实时库存（FOR UPDATE，期间不允许其他出入库修改）
+                var current = await GetStockForUpdateAsync(input.SkuId);
+                var diff = input.ActualStock - current; // 盈亏 = 实盘 - 确认时实时库存
+
+                // 4.3 明细的系统数同步为确认时实时库存，差异同步更新（SaveChanges 一并提交）
+                item.SystemStock = current;
                 item.ActualStock = input.ActualStock;
                 item.DiffQty = diff;
                 item.Remark = input.Remark;
 
-                // 按盈亏差值调整库存（delta = diff，可正可负）；乐观锁 CAS
-                await AdjustStockAndLogAsync(
-                    logList, stockCache,
-                    item.ProdInfoId, input.SkuId, diff,
-                    "盘点调整（实盘-系统）", dto.Operator, id);
+                // 4.4 库存直接置为实盘数：SKU 行已被本事务锁定，绝对写入不会与并发出入库相互覆盖
+                var affected = await _db.ProdSkus
+                    .Where(s => s.Id == input.SkuId)
+                    .ExecuteUpdateAsync(s => s.SetProperty(p => p.Stock, input.ActualStock));
+                if (affected == 0)
+                {
+                    throw new InvalidOperationException($"SKU不存在（sku_id={input.SkuId}）");
+                }
+
+                logList.Add(new LogStockLog
+                {
+                    ProdInfoId = item.ProdInfoId,
+                    SkuId = input.SkuId,
+                    ChangeType = ChangeTypeCheck,
+                    ChangeQty = diff,
+                    BeforeStock = current,
+                    AfterStock = input.ActualStock,
+                    RefType = RefTypeCheck,
+                    RefId = id,
+                    Remark = "盘点调整（实盘-确认时实时库存）",
+                    Operator = dto.Operator
+                });
             }
 
-            // 状态置 已完成；同步备注/操作人
-            order.Status = 1;
+            // 4.5 状态已由条件更新抢占，这里只同步备注/操作人
             order.Remark = dto.Remark;
             order.Operator = dto.Operator;
 
@@ -423,64 +451,26 @@ public class StockCheckService : IStockCheckService
     }
 
     /// <summary>
-    /// 乐观锁（CAS 比较并交换）调整 SKU 库存并写变动日志。
-    /// delta 可正（盈/增加）可负（亏/减少）。
-    /// 以当前库存为期望值做条件更新，受影响行数=0 视为并发冲突并重试（最多 MaxCasRetry 次）。
+    /// 锁定并读取 SKU 的当前库存（SELECT ... FOR UPDATE）。
+    /// 必须在已开启的数据库事务内调用；锁保证“读实时库存 → 写实盘数”期间不会被并发出入库打断。
     /// </summary>
-    private async Task AdjustStockAndLogAsync(
-        List<LogStockLog> logs,
-        Dictionary<long, int> stockCache,
-        long prodInfoId, long skuId, int delta,
-        string remark, string opUser, long refId)
+    private async Task<int> GetStockForUpdateAsync(long skuId)
     {
-        for (var attempt = 0; attempt < MaxCasRetry; attempt++)
+        var conn = _db.Database.GetDbConnection();
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT stock FROM prod_sku WHERE id = @id FOR UPDATE";
+        var p = cmd.CreateParameter();
+        p.ParameterName = "@id";
+        p.Value = skuId;
+        cmd.Parameters.Add(p);
+        cmd.Transaction = _db.Database.CurrentTransaction?.GetDbTransaction();
+
+        var result = await cmd.ExecuteScalarAsync();
+        if (result == null || result == DBNull.Value)
         {
-            // 取当前库存：优先用本事务已更新的缓存值，否则从库实时读取
-            var current = stockCache.TryGetValue(skuId, out var cached)
-                ? cached
-                : await _db.ProdSkus.AsNoTracking()
-                    .Where(s => s.Id == skuId)
-                    .Select(s => s.Stock)
-                    .FirstAsync();
-
-            var after = current + delta;
-
-            // 库存校验：调整后不得出现负库存
-            if (after < 0)
-            {
-                throw new InvalidOperationException(
-                    $"SKU(sku_id={skuId}) 调整后库存为负（当前 {current}，差值 {delta}）");
-            }
-
-            // 乐观锁：仅当库内 stock 仍等于读取到的 current 时才更新
-            var affected = await _db.ProdSkus
-                .Where(s => s.Id == skuId && s.Stock == current)
-                .ExecuteUpdateAsync(s => s.SetProperty(p => p.Stock, after));
-
-            if (affected == 1)
-            {
-                // 更新本事务库存缓存，供同 SKU 后续明细顺序计算
-                stockCache[skuId] = after;
-
-                logs.Add(new LogStockLog
-                {
-                    ProdInfoId = prodInfoId,
-                    SkuId = skuId,
-                    ChangeType = ChangeTypeCheck,
-                    ChangeQty = delta,
-                    BeforeStock = current,
-                    AfterStock = after,
-                    RefType = RefTypeCheck,
-                    RefId = refId,
-                    Remark = remark,
-                    Operator = opUser
-                });
-                return;
-            }
-            // affected==0：被其他请求并发修改，循环重新读取最新库存后重试
+            throw new InvalidOperationException($"SKU不存在（sku_id={skuId}）");
         }
-
-        throw new InvalidOperationException($"SKU(sku_id={skuId}) 库存更新并发冲突，请重试");
+        return Convert.ToInt32(result);
     }
 
     /// <summary>

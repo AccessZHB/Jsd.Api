@@ -11,10 +11,11 @@ namespace Jsd.Api.Services;
 /// 核心约定：
 /// 1. 创建/编辑/删除全部使用 IDbContextTransaction 事务，主表、明细、库存、变动日志要么全成功要么全回滚；
 /// 2. 库存只落在 prod_sku.stock 上，出库必须指定 sku_id；
-/// 3. 库存扣减/回补采用【乐观锁（CAS 比较并交换）】：以当前库存值为期望值做条件更新
-///    UPDATE prod_sku SET stock=@after WHERE id=@id AND stock=@current，
-///    受影响行数=0 表示并发被其他请求修改，自动重试（最多 3 次），避免引入 row_version 列改动表结构；
-/// 4. 库存校验：扣减前若 after&lt;0 直接抛「库存不足」，不进入数据库；
+/// 3. 库存扣减/回补采用【数据库原子更新】：
+///    扣减 UPDATE prod_sku SET stock = stock - @qty WHERE id=@id AND stock >= @qty，
+///    单条语句同时完成“校验 + 扣减”，受影响行数=0 直接判定库存不足，彻底杜绝超卖；
+///    回补 UPDATE prod_sku SET stock = stock + @qty WHERE id=@id；
+/// 4. 库存校验由数据库原子条件保证，不再应用层“先查后写”；
 /// 5. 变动日志 log_stock_log.change_type=2（出库），change_qty 正增负减，
 ///    ref_type 区分来源：stock_out（创建）/ stock_out_update（编辑）/ stock_out_delete（删除）；
 /// 6. 无审核环节，创建即完成（status=1）。
@@ -26,9 +27,6 @@ public class StockOutService : IStockOutService
 
     /// <summary>出库单号前缀（CK = ChuKu）</summary>
     private const string NoPrefix = "CK";
-
-    /// <summary>乐观锁 CAS 最大重试次数</summary>
-    private const int MaxCasRetry = 3;
 
     private readonly AppDbContext _db;
     private readonly ILogStockOutRepository _stockOutRepository;
@@ -179,9 +177,7 @@ public class StockOutService : IStockOutService
             await _stockOutRepository.AddAsync(order);
             await _stockOutRepository.SaveChangesAsync();
 
-            // 4.2 构建明细 + 逐 SKU 乐观锁扣减库存 + 写变动日志
-            // stockCache 记录本事务内已知的最新库存，保证同一 SKU 多次出现时顺序扣减
-            var stockCache = new Dictionary<long, int>();
+            // 4.2 构建明细 + 逐 SKU 原子扣减库存 + 写变动日志
             var logList = new List<LogStockLog>();
             var itemList = new List<LogStockOutItem>();
 
@@ -198,7 +194,7 @@ public class StockOutService : IStockOutService
 
                 // 扣减库存并写日志（delta 为负数）
                 await AdjustStockAndLogAsync(
-                    logList, stockCache,
+                    logList,
                     itemDto.ProdInfoId, itemDto.SkuId, -itemDto.Quantity,
                     "stock_out", order.Id, "出库扣减", dto.Operator);
             }
@@ -247,7 +243,6 @@ public class StockOutService : IStockOutService
         {
             // 3.1 查询旧明细，逐 SKU 回补库存并记录回补日志（delta 为正数）
             var oldItems = await _itemRepository.GetByStockOutIdAsync(id);
-            var stockCache = new Dictionary<long, int>();
             var logList = new List<LogStockLog>();
 
             foreach (var old in oldItems)
@@ -258,7 +253,7 @@ public class StockOutService : IStockOutService
                 }
 
                 await AdjustStockAndLogAsync(
-                    logList, stockCache,
+                    logList,
                     old.ProdInfoId, old.SkuId, old.Quantity,
                     "stock_out_update", id, "编辑出库单-回补原明细", dto.Operator);
             }
@@ -290,7 +285,7 @@ public class StockOutService : IStockOutService
                 });
 
                 await AdjustStockAndLogAsync(
-                    logList, stockCache,
+                    logList,
                     itemDto.ProdInfoId, itemDto.SkuId, -itemDto.Quantity,
                     "stock_out_update", id, "编辑出库单-按新明细出库", dto.Operator);
             }
@@ -331,7 +326,6 @@ public class StockOutService : IStockOutService
         try
         {
             // 1. 逐 SKU 回补库存（delta 为正数，写回补日志）
-            var stockCache = new Dictionary<long, int>();
             var logList = new List<LogStockLog>();
             foreach (var item in items)
             {
@@ -341,7 +335,7 @@ public class StockOutService : IStockOutService
                 }
 
                 await AdjustStockAndLogAsync(
-                    logList, stockCache,
+                    logList,
                     item.ProdInfoId, item.SkuId, item.Quantity,
                     "stock_out_delete", id, "删除出库单-回补库存", order.Operator);
             }
@@ -421,13 +415,13 @@ public class StockOutService : IStockOutService
     }
 
     /// <summary>
-    /// 乐观锁（CAS 比较并交换）调整 SKU 库存并写变动日志。
+    /// 原子调整 SKU 库存并写变动日志。
     /// delta &lt; 0 表示扣减（出库），delta &gt; 0 表示回补（编辑/删除）。
-    /// 以当前库存为期望值做条件更新，受影响行数=0 视为并发冲突并重试（最多 MaxCasRetry 次）。
+    /// 扣减使用单条条件更新 stock = stock - n WHERE id=? AND stock &gt;= n，
+    /// 受影响行数=0 即库存不足，不存在“先查后写”的竞态窗口。
     /// </summary>
     private async Task AdjustStockAndLogAsync(
         List<LogStockLog> logs,
-        Dictionary<long, int> stockCache,
         long prodInfoId, long? skuId, int delta,
         string refType, long refId, string remark, string opUser)
     {
@@ -436,54 +430,75 @@ public class StockOutService : IStockOutService
             throw new InvalidOperationException("出库/回补必须指定 SKU");
         }
 
-        for (var attempt = 0; attempt < MaxCasRetry; attempt++)
+        int after;
+        if (delta < 0)
         {
-            // 取当前库存：优先用本事务已更新的缓存值，否则从库实时读取
-            var current = stockCache.TryGetValue(skuId.Value, out var cached)
-                ? cached
-                : await _db.ProdSkus.AsNoTracking()
+            var need = -delta;
+            var affected = await _db.ProdSkus
+                .Where(s => s.Id == skuId.Value && s.Stock >= need)
+                .ExecuteUpdateAsync(s => s.SetProperty(p => p.Stock, p => p.Stock - need));
+
+            if (affected == 0)
+            {
+                // 失败路径才做额外查询，用于区分“SKU 不存在”与“库存不足”
+                var exists = await _db.ProdSkus.AnyAsync(s => s.Id == skuId.Value);
+                if (!exists)
+                {
+                    throw new InvalidOperationException($"SKU不存在（sku_id={skuId}）");
+                }
+                var current = await _db.ProdSkus.AsNoTracking()
                     .Where(s => s.Id == skuId.Value)
                     .Select(s => s.Stock)
                     .FirstAsync();
-
-            var after = current + delta;
-
-            // 库存校验：扣减不得导致负库存
-            if (after < 0)
-            {
                 throw new InvalidOperationException(
-                    $"SKU(sku_id={skuId}) 库存不足（当前 {current}，需扣 {Math.Abs(delta)}）");
+                    $"SKU(sku_id={skuId}) 库存不足（当前 {current}，需扣 {need}）");
             }
 
-            // 乐观锁：仅当库内 stock 仍等于读取到的 current 时才更新
-            var affected = await _db.ProdSkus
-                .Where(s => s.Id == skuId.Value && s.Stock == current)
-                .ExecuteUpdateAsync(s => s.SetProperty(p => p.Stock, after));
-
-            if (affected == 1)
+            after = await _db.ProdSkus.AsNoTracking()
+                .Where(s => s.Id == skuId.Value)
+                .Select(s => s.Stock)
+                .FirstAsync();
+        }
+        else
+        {
+            if (delta == 0)
             {
-                // 更新本事务库存缓存，供同 SKU 后续明细顺序计算
-                stockCache[skuId.Value] = after;
-
-                logs.Add(new LogStockLog
-                {
-                    ProdInfoId = prodInfoId,
-                    SkuId = skuId,
-                    ChangeType = ChangeTypeOut,
-                    ChangeQty = delta,
-                    BeforeStock = current,
-                    AfterStock = after,
-                    RefType = refType,
-                    RefId = refId,
-                    Remark = remark,
-                    Operator = opUser
-                });
-                return;
+                after = await _db.ProdSkus.AsNoTracking()
+                    .Where(s => s.Id == skuId.Value)
+                    .Select(s => s.Stock)
+                    .FirstAsync();
             }
-            // affected==0：被其他请求并发修改，循环重新读取最新库存后重试
+            else
+            {
+                var affected = await _db.ProdSkus
+                    .Where(s => s.Id == skuId.Value)
+                    .ExecuteUpdateAsync(s => s.SetProperty(p => p.Stock, p => p.Stock + delta));
+
+                if (affected == 0)
+                {
+                    throw new InvalidOperationException($"SKU不存在（sku_id={skuId}）");
+                }
+
+                after = await _db.ProdSkus.AsNoTracking()
+                    .Where(s => s.Id == skuId.Value)
+                    .Select(s => s.Stock)
+                    .FirstAsync();
+            }
         }
 
-        throw new InvalidOperationException($"SKU(sku_id={skuId}) 库存更新并发冲突，请重试");
+        logs.Add(new LogStockLog
+        {
+            ProdInfoId = prodInfoId,
+            SkuId = skuId,
+            ChangeType = ChangeTypeOut,
+            ChangeQty = delta,
+            BeforeStock = after - delta,
+            AfterStock = after,
+            RefType = refType,
+            RefId = refId,
+            Remark = remark,
+            Operator = opUser
+        });
     }
 
     /// <summary>

@@ -1,3 +1,4 @@
+using Jsd.Api.Attributes;
 using Jsd.Api.Models.Common;
 using Jsd.Api.Models.StockOut;
 using Jsd.Api.Services;
@@ -35,6 +36,7 @@ public class StockOutController : ControllerBase
     /// <param name="page">页码，默认1</param>
     /// <param name="pageSize">每页条数，默认10</param>
     [HttpGet("list")]
+    [Permission(StockOutPermissions.List)]
     [ProducesResponseType(typeof(ApiResponse<PagedResult<StockOutListDto>>), StatusCodes.Status200OK)]
     public async Task<ApiResponse<PagedResult<StockOutListDto>>> GetList(
         [FromQuery] string? keyword,
@@ -50,11 +52,12 @@ public class StockOutController : ControllerBase
     }
 
     /// <summary>
-    /// 2. 出库单详情（主表 + 明细列表）（权限：stockOut:detail）
+    /// 2. 出库单详情（主表 + 明细列表）（权限：stock_out:list）
     /// 示例：GET /api/stockOut/detail/1
     /// </summary>
     /// <param name="id">出库单ID</param>
     [HttpGet("detail/{id:long}")]
+    [Permission(StockOutPermissions.Detail)]
     [ProducesResponseType(typeof(ApiResponse<StockOutDetailDto>), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ApiResponse<StockOutDetailDto>), StatusCodes.Status404NotFound)]
     public async Task<ApiResponse<StockOutDetailDto>> GetDetail(long id)
@@ -63,9 +66,10 @@ public class StockOutController : ControllerBase
     }
 
     /// <summary>
-    /// 3. 创建出库单（写主表+明细，乐观锁扣减 SKU 库存，写库存变动日志；创建即完成）（权限：stockOut:create）
+    /// 3. 创建出库单（写主表+明细，原子扣减 SKU 库存，写库存变动日志；创建即完成）（权限：stock_out:add）
     /// </summary>
     [HttpPost("create")]
+    [Permission(StockOutPermissions.Create)]
     [ProducesResponseType(typeof(ApiResponse<object>), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ApiResponse<object>), StatusCodes.Status400BadRequest)]
     public async Task<ApiResponse<object>> Create([FromBody] StockOutCreateDto dto)
@@ -83,11 +87,12 @@ public class StockOutController : ControllerBase
     }
 
     /// <summary>
-    /// 4. 编辑出库单（旧明细回补库存 → 删旧明细 → 写新明细并扣减库存，事务保证一致）（权限：stockOut:update）
+    /// 4. 编辑出库单（旧明细回补库存 → 删旧明细 → 写新明细并扣减库存，事务保证一致）（权限：stock_out:edit）
     /// 示例：PUT /api/stockOut/update/1
     /// </summary>
     /// <param name="id">出库单ID</param>
     [HttpPut("update/{id:long}")]
+    [Permission(StockOutPermissions.Update)]
     [ProducesResponseType(typeof(ApiResponse<object>), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ApiResponse<object>), StatusCodes.Status400BadRequest)]
     [ProducesResponseType(typeof(ApiResponse<object>), StatusCodes.Status404NotFound)]
@@ -104,11 +109,12 @@ public class StockOutController : ControllerBase
     }
 
     /// <summary>
-    /// 5. 删除出库单（按明细回补 SKU 库存，再删除明细与主表，物理删除）（权限：stockOut:delete）
+    /// 5. 删除出库单（按明细回补 SKU 库存，再删除明细与主表，物理删除）（权限：stock_out:delete）
     /// 示例：DELETE /api/stockOut/delete/1
     /// </summary>
     /// <param name="id">出库单ID</param>
     [HttpDelete("delete/{id:long}")]
+    [Permission(StockOutPermissions.Delete)]
     [ProducesResponseType(typeof(ApiResponse<object>), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ApiResponse<object>), StatusCodes.Status404NotFound)]
     public async Task<ApiResponse<object>> Delete(long id)
