@@ -1,3 +1,4 @@
+using Jsd.Api.Attributes;
 using Jsd.Api.Models.Common;
 using Jsd.Api.Models.Finance;
 using Jsd.Api.Services;
@@ -29,6 +30,7 @@ public class ReceivableController : ControllerBase
     /// 示例：GET /api/receivable/page?page=1&amp;pageSize=10&amp;memberName=张&amp;orderNo=ORD&amp;status=0
     /// </summary>
     [HttpGet("page")]
+    [Permission(FinancePermissions.ReceivableList)]
     public async Task<ApiResponse<PagedResult<ReceivableListDto>>> GetPage([FromQuery] ReceivablePageQuery query)
     {
         var result = await _receivableService.GetListAsync(query);
@@ -40,6 +42,7 @@ public class ReceivableController : ControllerBase
     /// 示例：GET /api/receivable/1/detail
     /// </summary>
     [HttpGet("{id}/detail")]
+    [Permission(FinancePermissions.ReceivableList)]
     public async Task<ApiResponse<ReceivableDetailDto>> GetDetail(long id)
     {
         var dto = await _receivableService.GetDetailAsync(id);
@@ -57,6 +60,7 @@ public class ReceivableController : ControllerBase
     /// 示例：POST /api/receivable/sync/1001
     /// </summary>
     [HttpPost("sync/{orderId}")]
+    [Permission(FinancePermissions.ReceivableSync)]
     public async Task<ApiResponse<object>> SyncFromOrder(long orderId)
     {
         try

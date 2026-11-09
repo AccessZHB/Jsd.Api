@@ -1,3 +1,4 @@
+using Jsd.Api.Attributes;
 using Jsd.Api.Models.Common;
 using Jsd.Api.Models.Payment;
 using Jsd.Api.Services;
@@ -30,6 +31,7 @@ public class ReconciliationController : ControllerBase
     /// GET /api/reconciliation/download?billDate=2026-09-27&amp;billType=1&amp;force=false
     /// </summary>
     [HttpGet("download")]
+    [Permission(ReconciliationPermissions.ReconciliationDownload)]
     public async Task<ApiResponse<BillDownloadDto>> Download([FromQuery] DateTime? billDate,
         [FromQuery] int billType = (int)BillType.All, [FromQuery] bool force = false)
     {
@@ -51,6 +53,7 @@ public class ReconciliationController : ControllerBase
     /// GET /api/reconciliation/run?billDate=2026-09-27&amp;forceDownload=false
     /// </summary>
     [HttpGet("run")]
+    [Permission(ReconciliationPermissions.ReconciliationRun)]
     public async Task<ApiResponse<ReconciliationReportDto>> Run([FromQuery] DateTime? billDate,
         [FromQuery] bool forceDownload = false)
     {
@@ -71,6 +74,7 @@ public class ReconciliationController : ControllerBase
     /// GET /api/reconciliation/report?billDate=2026-09-27
     /// </summary>
     [HttpGet("report")]
+    [Permission(ReconciliationPermissions.ReconciliationList)]
     public async Task<ApiResponse<ReconciliationReportDto>> Report([FromQuery] DateTime? billDate)
     {
         try
@@ -91,6 +95,7 @@ public class ReconciliationController : ControllerBase
     /// GET /api/reconciliation/diffs?billDate=&amp;diffType=&amp;handleStatus=&amp;page=1&amp;pageSize=20
     /// </summary>
     [HttpGet("diffs")]
+    [Permission(ReconciliationPermissions.ReconciliationList)]
     public async Task<ApiResponse<PagedResult<ReconCheckDto>>> Diffs([FromQuery] DateTime? billDate,
         [FromQuery] int? diffType, [FromQuery] int? handleStatus,
         [FromQuery] int page = 1, [FromQuery] int pageSize = 20)
@@ -110,6 +115,7 @@ public class ReconciliationController : ControllerBase
     /// PUT /api/reconciliation/diff/{id}
     /// </summary>
     [HttpPut("diff/{id:long}")]
+    [Permission(ReconciliationPermissions.ReconciliationHandle)]
     public async Task<ApiResponse<bool>> HandleDiff([FromRoute] long id, [FromBody] HandleDiffRequest request)
     {
         try

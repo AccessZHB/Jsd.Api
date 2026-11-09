@@ -217,80 +217,123 @@ public class InvoiceService : IInvoiceService
             return ApiResponse<ApplyInvoiceResult>.Fail("订单已关闭，不能申请开票");
         }
 
-        // ---- 2. 查重：同一订单已有「申请中 / 已开票」记录 → 拒绝（先作废才能重开）----
-        var exist = await _invoiceRepo.FirstOrDefaultAsync(i => i.OrderId == dto.OrderId && i.Status != (int)InvoiceStatus.Canceled);
-        if (exist != null)
+        // ---- 2. 查重 + 落库：用事务包裹，配合 order_invoice.uk_order_active 唯一约束，
+        //      彻底防止并发/双击造成的重复开票。
+        //      说明：查重(应用层) + 唯一索引(数据库层) 双重拦截；
+        //            两个并发请求同时通过查重时，第二个 INSERT 会被唯一索引拒绝。
+        OrderInvoice? invoice = null;
+        await using var transaction = await _db.Database.BeginTransactionAsync();
+        try
         {
-            return ApiResponse<ApplyInvoiceResult>.Fail(
-                $"该订单已有开票记录（{InvoiceStatusNames.GetName(exist.Status)}），如需重新开票请先作废原记录");
-        }
-
-        // ---- 3. 支付单校验（可空；传了就要属于该订单且已支付成功）----
-        if (dto.PaymentId.HasValue && dto.PaymentId.Value > 0)
-        {
-            var payment = await _paymentRepo.FirstOrDefaultAsync(p => p.Id == dto.PaymentId.Value);
-            if (payment == null)
+            // 查重：同一订单已有「申请中 / 已开票」记录 → 拒绝（先作废才能重开）
+            var exist = await _invoiceRepo.FirstOrDefaultAsync(i => i.OrderId == dto.OrderId && i.Status != (int)InvoiceStatus.Canceled);
+            if (exist != null)
             {
-                return ApiResponse<ApplyInvoiceResult>.Fail("支付单不存在");
+                await transaction.RollbackAsync();
+                return ApiResponse<ApplyInvoiceResult>.Fail(
+                    $"该订单已有开票记录（{InvoiceStatusNames.GetName(exist.Status)}），如需重新开票请先作废原记录");
             }
 
-            if (payment.BizOrderId != dto.OrderId)
+            // ---- 3. 支付单校验（可空；传了就要属于该订单且已支付成功）----
+            if (dto.PaymentId.HasValue && dto.PaymentId.Value > 0)
             {
-                return ApiResponse<ApplyInvoiceResult>.Fail("支付单与订单不匹配");
+                var payment = await _paymentRepo.FirstOrDefaultAsync(p => p.Id == dto.PaymentId.Value);
+                if (payment == null)
+                {
+                    await transaction.RollbackAsync();
+                    return ApiResponse<ApplyInvoiceResult>.Fail("支付单不存在");
+                }
+
+                if (payment.BizOrderId != dto.OrderId)
+                {
+                    await transaction.RollbackAsync();
+                    return ApiResponse<ApplyInvoiceResult>.Fail("支付单与订单不匹配");
+                }
+
+                if (payment.Status != (int)PayOrderStatus.Success)
+                {
+                    await transaction.RollbackAsync();
+                    return ApiResponse<ApplyInvoiceResult>.Fail("支付单未支付成功，不能开票");
+                }
             }
 
-            if (payment.Status != (int)PayOrderStatus.Success)
+            // ---- 4. 金额：以订单实付金额为上限（服务端权威，不信任前端）----
+            //      不传金额时按订单实付自动填充；税额不传时按 13% 从价税合计反算。
+            var payAmount = order.PayAmount;
+            var totalAmount = dto.TotalAmount > 0 ? dto.TotalAmount : payAmount;
+            if (totalAmount <= 0)
             {
-                return ApiResponse<ApplyInvoiceResult>.Fail("支付单未支付成功，不能开票");
+                await transaction.RollbackAsync();
+                return ApiResponse<ApplyInvoiceResult>.Fail("开票金额必须大于 0");
             }
+
+            if (totalAmount > payAmount)
+            {
+                await transaction.RollbackAsync();
+                return ApiResponse<ApplyInvoiceResult>.Fail($"开票金额不能超过订单实付金额（¥{payAmount:0.00}）");
+            }
+
+            var taxAmount = dto.TaxAmount ?? TaxNoRule.CalcTaxAmount(totalAmount, TaxNoRule.DefaultTaxRate);
+            if (taxAmount < 0 || taxAmount >= totalAmount)
+            {
+                await transaction.RollbackAsync();
+                return ApiResponse<ApplyInvoiceResult>.Fail("税额不合法（须 ≥ 0 且小于发票总金额）");
+            }
+
+            // ---- 5. 落库：状态 = 申请中，抬头信息整体快照 ----
+            invoice = new OrderInvoice
+            {
+                OrderId = dto.OrderId,
+                PaymentId = dto.PaymentId.HasValue && dto.PaymentId.Value > 0 ? dto.PaymentId.Value : null,
+                InvoiceType = dto.InvoiceType,
+                TitleType = dto.TitleType,
+                TitleName = dto.TitleName.Trim(),
+                TaxNo = Normalize(dto.TaxNo),
+                BankName = Normalize(dto.BankName),
+                BankAccount = Normalize(dto.BankAccount),
+                Address = Normalize(dto.Address),
+                Phone = Normalize(dto.Phone),
+                TotalAmount = decimal.Round(totalAmount, 2),
+                TaxAmount = decimal.Round(taxAmount, 2),
+                Status = (int)InvoiceStatus.Applying,
+                ApplicantId = _currentUser.UserId,
+                ApplicantName = _currentUser.UserName,
+                Remark = Normalize(dto.Remark),
+                CreateTime = DateTime.Now
+            };
+
+            await _invoiceRepo.AddAsync(invoice);
+
+            // 【并发安全】SaveChanges 时若触发 uk_order_active 唯一约束（并发重复开票），
+            //   捕获后回滚事务并返回友好提示，不把底层 DB 异常抛给前端。
+            try
+            {
+                await _db.SaveChangesAsync();
+            }
+            catch (DbUpdateException ex) when (IsDuplicateKeyException(ex))
+            {
+                await transaction.RollbackAsync();
+                return ApiResponse<ApplyInvoiceResult>.Fail(
+                    "该订单已有开票记录，如需重新开票请先作废原记录");
+            }
+
+            await transaction.CommitAsync();
+        }
+        catch
+        {
+            await transaction.RollbackAsync();
+            throw;
         }
 
-        // ---- 4. 金额：以订单实付金额为上限（服务端权威，不信任前端）----
-        //      不传金额时按订单实付自动填充；税额不传时按 13% 从价税合计反算。
-        var payAmount = order.PayAmount;
-        var totalAmount = dto.TotalAmount > 0 ? dto.TotalAmount : payAmount;
-        if (totalAmount <= 0)
+        // ---- 6. 第三方开票平台：本地落库已提交（事务外调用，避免网络 I/O 长时间占用事务/锁）。
+        //      对接了就直接开票，未对接则降级为人工开票。
+        //      若平台调用成功，回写状态为已开票；若失败，保持「申请中」等待财务人工开票，
+        //      且由于本地已有申请记录，重复申请会被查重/唯一索引拦截，不会重复向平台提交。
+        if (invoice == null)
         {
-            return ApiResponse<ApplyInvoiceResult>.Fail("开票金额必须大于 0");
+            // 理论不可达：事务提交成功时 invoice 必然已赋值。
+            throw new InvalidOperationException("开票记录未生成");
         }
-
-        if (totalAmount > payAmount)
-        {
-            return ApiResponse<ApplyInvoiceResult>.Fail($"开票金额不能超过订单实付金额（¥{payAmount:0.00}）");
-        }
-
-        var taxAmount = dto.TaxAmount ?? TaxNoRule.CalcTaxAmount(totalAmount, TaxNoRule.DefaultTaxRate);
-        if (taxAmount < 0 || taxAmount >= totalAmount)
-        {
-            return ApiResponse<ApplyInvoiceResult>.Fail("税额不合法（须 ≥ 0 且小于发票总金额）");
-        }
-
-        // ---- 5. 落库：状态 = 申请中，抬头信息整体快照 ----
-        var invoice = new OrderInvoice
-        {
-            OrderId = dto.OrderId,
-            PaymentId = dto.PaymentId.HasValue && dto.PaymentId.Value > 0 ? dto.PaymentId.Value : null,
-            InvoiceType = dto.InvoiceType,
-            TitleType = dto.TitleType,
-            TitleName = dto.TitleName.Trim(),
-            TaxNo = Normalize(dto.TaxNo),
-            BankName = Normalize(dto.BankName),
-            BankAccount = Normalize(dto.BankAccount),
-            Address = Normalize(dto.Address),
-            Phone = Normalize(dto.Phone),
-            TotalAmount = decimal.Round(totalAmount, 2),
-            TaxAmount = decimal.Round(taxAmount, 2),
-            Status = (int)InvoiceStatus.Applying,
-            ApplicantId = _currentUser.UserId,
-            ApplicantName = _currentUser.UserName,
-            Remark = Normalize(dto.Remark),
-            CreateTime = DateTime.Now
-        };
-
-        await _invoiceRepo.AddAsync(invoice);
-        await _db.SaveChangesAsync();
-
-        // ---- 6. 第三方开票平台：对接了就直接开票，未对接则降级为人工开票 ----
         var platform = await TryIssueByPlatformAsync(invoice);
         await _db.SaveChangesAsync();
 
@@ -308,6 +351,24 @@ public class InvoiceService : IInvoiceService
         };
 
         return ApiResponse<ApplyInvoiceResult>.Success(result, result.Message);
+    }
+
+    /// <summary>
+    /// 判断异常是否为 MySQL 唯一键冲突（错误码 1062 ER_DUP_ENTRY），
+    /// 用于在并发重复开票时把底层 DB 异常转成友好业务提示。
+    /// </summary>
+    private static bool IsDuplicateKeyException(Exception ex)
+    {
+        var inner = ex.InnerException;
+        while (inner != null)
+        {
+            if (inner is MySqlConnector.MySqlException mySqlEx && mySqlEx.Number == 1062)
+            {
+                return true;
+            }
+            inner = inner.InnerException;
+        }
+        return false;
     }
 
     // ============================================================

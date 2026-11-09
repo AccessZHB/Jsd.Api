@@ -16,6 +16,9 @@ public static class FinancePermissions
     /// <summary>应收账款 - 查看列表（菜单 321）</summary>
     public const string ReceivableList = "finance:receivable:list";
 
+    /// <summary>应收账款 - 从订单同步生成（内部触发/补单）</summary>
+    public const string ReceivableSync = "finance:receivable:sync";
+
     /// <summary>收款记录 - 查看列表（菜单 322）</summary>
     public const string PaymentList = "finance:payment:list";
 

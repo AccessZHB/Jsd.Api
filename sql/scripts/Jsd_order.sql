@@ -3661,3 +3661,60 @@ FROM information_schema.columns
 WHERE table_schema = DATABASE()
   AND table_name = 'price_rule'
   AND column_name = 'calc_value';
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  -- ---------- 预检查 1：mkt_payment_item 是否存在重复 (payment_id, receivable_id) ----------
+SELECT payment_id, receivable_id, COUNT(*) AS cnt
+FROM mkt_payment_item
+GROUP BY payment_id, receivable_id
+HAVING cnt > 1;
+-- 若有结果，需先人工清理（保留 id 最小的一条，删除其余）：
+-- DELETE p1 FROM mkt_payment_item p1
+-- INNER JOIN mkt_payment_item p2
+--   ON p1.payment_id = p2.payment_id AND p1.receivable_id = p2.receivable_id AND p1.id > p2.id;
+
+
+-- ---------- 1. mkt_payment_item：核销唯一约束 ----------
+ALTER TABLE mkt_payment_item
+    ADD UNIQUE KEY uk_payment_receivable (payment_id, receivable_id);
+
+
+-- ---------- 预检查 2：order_invoice 是否存在同一订单多张有效票（status != 2） ----------
+SELECT order_id, COUNT(*) AS cnt
+FROM order_invoice
+WHERE status <> 2
+GROUP BY order_id
+HAVING cnt > 1;
+-- 若有结果，需先把重复的作废（保留最新一张），再执行下方 ALTER。
+
+
+-- ---------- 2. order_invoice：单订单有效票唯一约束 ----------
+-- 2.1 新增生成列 active_order_id：
+--     status=2(已作废) → NULL（不参与唯一约束，允许作废后重开）
+--     其它状态(申请中/已开票) → order_id
+ALTER TABLE order_invoice
+    ADD COLUMN active_order_id BIGINT
+        GENERATED ALWAYS AS (CASE WHEN status = 2 THEN NULL ELSE order_id END) VIRTUAL
+        COMMENT '有效票订单ID（作废时为NULL，用于唯一约束：同一订单只能一张有效票）';
+
+-- 2.2 在生成列上建唯一索引
+ALTER TABLE order_invoice
+    ADD UNIQUE KEY uk_order_active (active_order_id);
+
+
+-- ---------- 执行后校验 ----------
+SHOW INDEX FROM mkt_payment_item WHERE Key_name = 'uk_payment_receivable';
+SHOW INDEX FROM order_invoice WHERE Key_name = 'uk_order_active';
+
+
+-- ---------- 回滚 ----------
+-- ALTER TABLE mkt_payment_item DROP INDEX uk_payment_receivable;
+-- ALTER TABLE order_invoice DROP INDEX uk_order_active;
+-- ALTER TABLE order_invoice DROP COLUMN active_order_id;

@@ -185,6 +185,12 @@ public class PaymentService : IPaymentService
         try
         {
             // 2) 收款单校验（带跟踪，后续要改状态）
+            //    【并发安全】在事务内对收款单行加 FOR UPDATE 行级锁：
+            //    并发核销同一收款单时，后到的请求会在此处阻塞，直到前一个事务提交/回滚，
+            //    避免两者都读到 status=Pending 并重复写 mkt_payment_item。
+            await _db.Database.ExecuteSqlInterpolatedAsync(
+                $"SELECT 1 FROM mkt_payment WHERE id = {dto.PaymentId} FOR UPDATE");
+
             var payment = await _paymentRepository.GetByIdTrackedAsync(dto.PaymentId);
             if (payment == null)
             {
@@ -222,6 +228,11 @@ public class PaymentService : IPaymentService
 
             foreach (var item in dto.Items)
             {
+                // 【并发安全】对该应收单行加 FOR UPDATE 行级锁：
+                //   防止两笔不同收款单同时核销同一应收，导致 unpaid_amount 读-改-写丢失更新。
+                await _db.Database.ExecuteSqlInterpolatedAsync(
+                    $"SELECT 1 FROM trx_receivable WHERE id = {item.ReceivableId} FOR UPDATE");
+
                 var receivable = await _receivableRepository.GetByIdTrackedAsync(item.ReceivableId);
                 if (receivable == null)
                 {

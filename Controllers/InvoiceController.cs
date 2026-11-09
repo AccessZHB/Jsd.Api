@@ -1,4 +1,5 @@
 using FluentValidation;
+using Jsd.Api.Attributes;
 using Jsd.Api.Models.Common;
 using Jsd.Api.Models.Invoice;
 using Jsd.Api.Services;
@@ -35,6 +36,7 @@ public class InvoiceController : ControllerBase
     /// POST /api/invoice/info
     /// </summary>
     [HttpPost("info")]
+    [Permission(InvoicePermissions.CustomerInvoiceSave)]
     public async Task<ApiResponse<long>> SaveCustomerInvoice([FromBody] SaveCustomerInvoiceDto dto)
     {
         try
@@ -56,6 +58,7 @@ public class InvoiceController : ControllerBase
     /// GET /api/invoice/info/{customerId}
     /// </summary>
     [HttpGet("info/{customerId:long}")]
+    [Permission(InvoicePermissions.CustomerInvoiceList)]
     public async Task<ApiResponse<List<CustomerInvoiceInfoDto>>> GetCustomerInvoiceList(long customerId)
     {
         return await _invoiceService.GetCustomerInvoiceListAsync(customerId);
@@ -66,6 +69,7 @@ public class InvoiceController : ControllerBase
     /// GET /api/invoice/info/detail/{id}
     /// </summary>
     [HttpGet("info/detail/{id:long}")]
+    [Permission(InvoicePermissions.CustomerInvoiceList)]
     public async Task<ApiResponse<CustomerInvoiceInfoDto>> GetCustomerInvoice(long id)
     {
         return await _invoiceService.GetCustomerInvoiceAsync(id);
@@ -79,6 +83,7 @@ public class InvoiceController : ControllerBase
     /// POST /api/invoice/apply
     /// </summary>
     [HttpPost("apply")]
+    [Permission(InvoicePermissions.InvoiceApply)]
     public async Task<ApiResponse<ApplyInvoiceResult>> ApplyInvoice([FromBody] ApplyInvoiceDto dto)
     {
         try
@@ -101,6 +106,7 @@ public class InvoiceController : ControllerBase
     /// PUT /api/invoice/{id}/cancel
     /// </summary>
     [HttpPut("{id:long}/cancel")]
+    [Permission(InvoicePermissions.InvoiceCancel)]
     public async Task<ApiResponse<CancelInvoiceResult>> CancelInvoice(long id, [FromBody] CancelInvoiceDto dto)
     {
         try
@@ -122,6 +128,7 @@ public class InvoiceController : ControllerBase
     /// PUT /api/invoice/{id}/issue
     /// </summary>
     [HttpPut("{id:long}/issue")]
+    [Permission(InvoicePermissions.InvoiceIssue)]
     public async Task<ApiResponse<bool>> IssueInvoice(long id, [FromBody] IssueInvoiceDto dto)
     {
         try
@@ -145,6 +152,7 @@ public class InvoiceController : ControllerBase
     /// GET /api/invoice/list
     /// </summary>
     [HttpGet("list")]
+    [Permission(InvoicePermissions.InvoiceList)]
     public async Task<ApiResponse<PagedResult<InvoiceListDto>>> GetList([FromQuery] InvoiceQueryDto query)
     {
         return await _invoiceService.GetPagedListAsync(query);
@@ -155,6 +163,7 @@ public class InvoiceController : ControllerBase
     /// GET /api/invoice/{id}
     /// </summary>
     [HttpGet("{id:long}")]
+    [Permission(InvoicePermissions.InvoiceList)]
     public async Task<ApiResponse<InvoiceDetailDto>> GetDetail(long id)
     {
         return await _invoiceService.GetDetailAsync(id);

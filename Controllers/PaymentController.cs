@@ -1,4 +1,5 @@
 using FluentValidation;
+using Jsd.Api.Attributes;
 using Jsd.Api.Models.Common;
 using Jsd.Api.Models.Finance;
 using Jsd.Api.Services;
@@ -34,6 +35,7 @@ public class PaymentController : ControllerBase
     /// 示例：GET /api/payment/page?page=1&amp;pageSize=10&amp;memberName=张&amp;status=0
     /// </summary>
     [HttpGet("page")]
+    [Permission(FinancePermissions.PaymentList)]
     public async Task<ApiResponse<PagedResult<PaymentListDto>>> GetPage([FromQuery] PaymentPageQuery query)
     {
         var result = await _paymentService.GetListAsync(query);
@@ -45,6 +47,7 @@ public class PaymentController : ControllerBase
     /// 示例：GET /api/payment/1/detail
     /// </summary>
     [HttpGet("{id}/detail")]
+    [Permission(FinancePermissions.PaymentList)]
     public async Task<ApiResponse<PaymentDetailDto>> GetDetail(long id)
     {
         var dto = await _paymentService.GetDetailAsync(id);
@@ -60,6 +63,7 @@ public class PaymentController : ControllerBase
     /// 请求体：{ "memberId":1,"amount":5000.00,"paymentMethod":1,"paymentDate":"2026-09-15","voucher":"","remark":"" }
     /// </summary>
     [HttpPost]
+    [Permission(FinancePermissions.PaymentAdd)]
     public async Task<ApiResponse<PaymentCreateResultDto>> Create([FromBody] PaymentCreateDto dto)
     {
         try
@@ -90,6 +94,7 @@ public class PaymentController : ControllerBase
     /// 约束：items 各 amount 之和必须恰好等于收款单金额。
     /// </summary>
     [HttpPost("{id}/write-off")]
+    [Permission(FinancePermissions.PaymentVerify)]
     public async Task<ApiResponse<object>> WriteOff(long id, [FromBody] List<WriteOffDto> items)
     {
         var input = new WriteOffInputDto { PaymentId = id, Items = items ?? new List<WriteOffDto>() };
@@ -115,6 +120,7 @@ public class PaymentController : ControllerBase
     /// 示例：GET /api/payment/logs/1001
     /// </summary>
     [HttpGet("logs/{orderId}")]
+    [Permission(FinancePermissions.PaymentList)]
     public async Task<ApiResponse<List<PaymentLogDto>>> GetLogs(long orderId)
     {
         var logs = await _paymentService.GetLogsByOrderIdAsync(orderId);
