@@ -16,7 +16,8 @@ public interface IOrderRepository : IRepository<TrxOrder>
     /// <param name="endTime">创建时间止（可空，只传日期自动按当天 23:59:59 处理）</param>
     Task<(List<TrxOrder> Items, int Total)> GetPagedListAsync(
         string? orderNo, int? orderStatus, DateTime? startTime, DateTime? endTime,
-        long? buyerId, string? buyerKeyword, string? receiverKeyword, int page, int pageSize);
+        long? buyerId, string? buyerKeyword, string? receiverKeyword,
+        int page, int pageSize, long? lastId);
 
     /// <summary>根据ID查询订单详情（含明细，明细按 Id 升序）</summary>
     Task<TrxOrder?> GetDetailAsync(long id);

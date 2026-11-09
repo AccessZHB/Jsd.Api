@@ -3562,3 +3562,70 @@ ALTER TABLE `pur_order`
 -- ALTER TABLE `trx_order`  DROP INDEX `idx_order_status`;
 -- ALTER TABLE `pur_order`  DROP INDEX `idx_status`;
 -- ALTER TABLE `pur_order`  DROP INDEX `idx_supplier_id`;   -- 被 idx_pur_order_supplier_status_date 左前缀覆盖
+
+
+
+
+
+-- 1. prod_sku：商品 ID
+CREATE INDEX idx_prod_sku_prod_info_id
+    ON prod_sku (prod_info_id);
+
+-- 2. log_stock_log：单据追溯
+CREATE INDEX idx_log_stock_log_ref_type_ref_id
+    ON log_stock_log (ref_type, ref_id);
+
+-- 3. log_stock_log：SKU + 时间
+CREATE INDEX idx_log_stock_log_sku_id_create_time
+    ON log_stock_log (sku_id, create_time);
+
+-- 4. 冗余清理（最左前缀已被联合索引覆盖）
+ALTER TABLE log_stock_log DROP INDEX idx_sku_id;
+
+
+
+
+
+SELECT index_name,
+       GROUP_CONCAT(column_name ORDER BY seq_in_index) AS indexed_columns
+FROM information_schema.statistics
+WHERE table_schema = DATABASE()
+  AND table_name = 'trx_order'
+GROUP BY index_name
+ORDER BY index_name;
+
+
+-- ---------- 1. 状态筛选 + 游标分页 ----------
+-- 支撑：WHERE is_deleted = 0 AND order_status = ? AND id < ? ORDER BY id DESC
+CREATE INDEX idx_trx_order_status_cursor
+    ON trx_order (is_deleted, order_status, id);
+
+
+-- ---------- 2. 买家维度 + 游标分页 ----------
+-- 支撑：后台按买家筛选、会员「我的订单」（WHERE is_deleted = 0 AND buyer_id = ? AND id < ?）
+CREATE INDEX idx_trx_order_buyer_cursor
+    ON trx_order (is_deleted, buyer_id, id);
+
+
+-- ---------- 3. 下单时间区间 + 游标分页 ----------
+-- 支撑：WHERE is_deleted = 0 AND create_time BETWEEN ? AND ? AND id < ? ORDER BY id DESC
+CREATE INDEX idx_trx_order_time_cursor
+    ON trx_order (is_deleted, create_time, id);
+
+
+-- ---------- 4. 冗余单列索引清理（可选，建议执行） ----------
+-- 新联合索引的最左前缀（is_deleted 之外的 order_status / buyer_id / create_time）
+-- 已覆盖原有单列索引的查询能力，保留会让每次写入多维护 3 棵 B+ 树。
+ALTER TABLE trx_order DROP INDEX idx_order_status;
+ALTER TABLE trx_order DROP INDEX idx_buyer_id;
+ALTER TABLE trx_order DROP INDEX idx_create_time;
+
+
+-- ---------- 5. 执行后校验 ----------
+SELECT index_name, non_unique,
+       GROUP_CONCAT(column_name ORDER BY seq_in_index) AS indexed_columns
+FROM information_schema.statistics
+WHERE table_schema = DATABASE()
+  AND table_name = 'trx_order'
+GROUP BY index_name, non_unique
+ORDER BY index_name;

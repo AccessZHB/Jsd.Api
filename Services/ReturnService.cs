@@ -6,6 +6,7 @@ using Jsd.Api.Models.Common;
 using Jsd.Api.Repositories;
 using Jsd.Api.Validators;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 
 namespace Jsd.Api.Services;
 
@@ -22,7 +23,7 @@ namespace Jsd.Api.Services;
 /// 【联动退款】退货单关联"退货退款"类型的退款单时，收货完成且退款仍为待退款状态，
 ///            自动调用 RefundService.ExecuteRefundCore 执行退款，与收货同事务提交。
 ///
-/// 【幂等】收货按 status 判重：已收货/已退款/已拒绝 不可重复收货。
+/// 【幂等】收货按条件更新抢占：并发双击/双开只有一次能把退货单推进到"已收货/已拒绝"。
 ///
 /// 【留痕】每次状态流转写 trx_refund_log。
 /// </summary>
@@ -298,67 +299,106 @@ public class ReturnService : IReturnService
             }
         }
 
-        // 写回实收数量与行状态
-        var stockLogs = new List<LogStockLog>();
-        var stockCache = new Dictionary<long, int>();
-        var anyReceived = false;
-        foreach (var line in dto.Items)
-        {
-            var item = ret.Items.First(i => i.Id == line.ItemId);
-            item.ReceivedQuantity = line.ReceivedQuantity;
-            if (line.ReceivedQuantity > 0)
-            {
-                item.Status = (int)ReturnItemStatus.Received;
-                anyReceived = true;
-                // 仅当存在 SKU 时才回滚库存
-                if (item.SkuId.HasValue && item.SkuId.Value > 0)
-                {
-                    await AddStockAsync(stockLogs, stockCache,
-                        item.ProdInfoId, item.SkuId.Value, line.ReceivedQuantity,
-                        $"退货回滚 退货单{ret.ReturnNo}", ret.Id);
-                }
-            }
-            else
-            {
-                item.Status = (int)ReturnItemStatus.Rejected; // 0 实收 = 拒收
-            }
-        }
+        var anyReceived = dto.Items.Any(l => l.ReceivedQuantity > 0);
 
-        if (anyReceived)
+        await using var tx = await _db.Database.BeginTransactionAsync();
+        try
         {
-            ret.Status = (int)ReturnStatus.Received;
+            // 乐观锁抢占：并发收货（双击/双开）只有一个请求能推进状态，
+            // 避免重复回滚库存 + 重复触发退款。
+            var targetStatus = anyReceived ? (int)ReturnStatus.Received : (int)ReturnStatus.Rejected;
+            var claimed = await _db.TrxReturns
+                .Where(r => r.Id == id
+                            && (r.Status == (int)ReturnStatus.Approved
+                                || r.Status == (int)ReturnStatus.Shipped))
+                .ExecuteUpdateAsync(s => s
+                    .SetProperty(p => p.Status, targetStatus)
+                    .SetProperty(p => p.HandleTime, DateTime.Now)
+                    .SetProperty(p => p.AdminRemark, dto.AdminRemark ?? ret.AdminRemark));
+
+            if (claimed == 0)
+            {
+                await tx.RollbackAsync();
+                return ApiResponse<object>.Fail("该退货单已被处理，请刷新后重试");
+            }
+
+            // 同步内存态（数据库状态已由条件更新落库）
+            ret.Status = targetStatus;
             ret.HandleTime = DateTime.Now;
             if (!string.IsNullOrWhiteSpace(dto.AdminRemark))
             {
                 ret.AdminRemark = dto.AdminRemark;
             }
-            await _db.LogStockLogs.AddRangeAsync(stockLogs);
-            await AppendLogAsync(ret.Id, RefundLogActions.ReturnReceived, _currentUser.UserId,
-                _currentUser.UserName, dto.AdminRemark);
 
-            // 联动退款：关联"退货退款"且仍为待退款的退款单，自动执行
-            if (ret.RefundId.HasValue)
+            // 写回实收数量与行状态，并按实收数量回滚库存
+            var stockLogs = new List<LogStockLog>();
+            var stockCache = new Dictionary<long, int>();
+            foreach (var line in dto.Items)
             {
-                var refund = await _refundRepo.FirstOrDefaultAsync(r => r.Id == ret.RefundId.Value);
-                if (refund != null
-                    && refund.RefundType == (int)RefundType.ReturnAndRefund
-                    && refund.Status == (int)RefundStatus.Approved)
+                var item = ret.Items.First(i => i.Id == line.ItemId);
+                item.ReceivedQuantity = line.ReceivedQuantity;
+                if (line.ReceivedQuantity > 0)
                 {
-                    await _refundService.ExecuteRefundCoreAsync(refund, _currentUser.UserId, _currentUser.UserName);
+                    item.Status = (int)ReturnItemStatus.Received;
+                    // 仅当存在 SKU 时才回滚库存
+                    if (item.SkuId.HasValue && item.SkuId.Value > 0)
+                    {
+                        await AddStockAsync(stockLogs, stockCache,
+                            item.ProdInfoId, item.SkuId.Value, line.ReceivedQuantity,
+                            $"退货回滚 退货单{ret.ReturnNo}", ret.Id);
+                    }
+                }
+                else
+                {
+                    item.Status = (int)ReturnItemStatus.Rejected; // 0 实收 = 拒收
                 }
             }
-        }
-        else
-        {
-            // 全部拒收
-            ret.Status = (int)ReturnStatus.Rejected;
-            ret.HandleTime = DateTime.Now;
-            await AppendLogAsync(ret.Id, RefundLogActions.ReturnReceived, _currentUser.UserId,
-                _currentUser.UserName, "仓库收货-全部拒收（未收回任何商品）");
-        }
 
-        await _db.SaveChangesAsync();
-        return ApiResponse<object>.Success(new { id }, anyReceived ? "收货成功，库存已回滚" : "已全部拒收");
+            if (anyReceived)
+            {
+                await _db.LogStockLogs.AddRangeAsync(stockLogs);
+                await AppendLogAsync(ret.Id, RefundLogActions.ReturnReceived, _currentUser.UserId,
+                    _currentUser.UserName, dto.AdminRemark);
+
+                // 联动退款：关联"退货退款"且仍为待退款的退款单，在收货事务内抢占 1→2 后自动打款
+                if (ret.RefundId.HasValue)
+                {
+                    var refund = await _refundRepo.FirstOrDefaultAsync(r => r.Id == ret.RefundId.Value);
+                    if (refund != null
+                        && refund.RefundType == (int)RefundType.ReturnAndRefund
+                        && refund.Status == (int)RefundStatus.Approved)
+                    {
+                        var refundClaimed = await _db.TrxRefunds
+                            .Where(r => r.Id == refund.Id && r.Status == (int)RefundStatus.Approved)
+                            .ExecuteUpdateAsync(s => s
+                                .SetProperty(p => p.Status, (int)RefundStatus.Refunded)
+                                .SetProperty(p => p.RefundTime, DateTime.Now)
+                                .SetProperty(p => p.OperatorId, _currentUser.UserId));
+
+                        if (refundClaimed > 0)
+                        {
+                            await _refundService.ExecuteRefundCoreAsync(
+                                refund, _currentUser.UserId, _currentUser.UserName);
+                        }
+                    }
+                }
+            }
+            else
+            {
+                // 全部拒收
+                await AppendLogAsync(ret.Id, RefundLogActions.ReturnReceived, _currentUser.UserId,
+                    _currentUser.UserName, "仓库收货-全部拒收（未收回任何商品）");
+            }
+
+            await _db.SaveChangesAsync();
+            await tx.CommitAsync();
+            return ApiResponse<object>.Success(new { id }, anyReceived ? "收货成功，库存已回滚" : "已全部拒收");
+        }
+        catch
+        {
+            await tx.RollbackAsync();
+            throw;
+        }
     }
 
     // ============================================================

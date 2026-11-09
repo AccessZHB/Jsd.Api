@@ -1,3 +1,4 @@
+using Jsd.Api.Attributes;
 using Jsd.Api.Models.AfterSale;
 using Jsd.Api.Models.Common;
 using Jsd.Api.Services;
@@ -27,6 +28,7 @@ public class ReturnController : ControllerBase
 
     /// <summary>创建退货单（手动创建或退款审核自动生成）</summary>
     [HttpPost]
+    [Permission(AfterSalePermissions.ReturnCreate)]
     public async Task<ApiResponse<ReturnCreateResult>> Create([FromBody] CreateReturnDto dto)
     {
         try
@@ -41,6 +43,7 @@ public class ReturnController : ControllerBase
 
     /// <summary>退货列表分页查询</summary>
     [HttpGet("list")]
+    [Permission(AfterSalePermissions.ReturnList)]
     public async Task<ApiResponse<PagedResult<ReturnListDto>>> GetPage([FromQuery] ReturnQueryDto query)
     {
         return await _returnService.GetPagedListAsync(query);
@@ -48,6 +51,7 @@ public class ReturnController : ControllerBase
 
     /// <summary>退货详情（含明细）</summary>
     [HttpGet("{id:long}")]
+    [Permission(AfterSalePermissions.ReturnList)]
     public async Task<ApiResponse<ReturnDetailDto>> GetDetail(long id)
     {
         return await _returnService.GetDetailAsync(id);
@@ -55,6 +59,7 @@ public class ReturnController : ControllerBase
 
     /// <summary>仓库确认收货（库存回滚 + 自动触发退款）</summary>
     [HttpPut("{id:long}/receive")]
+    [Permission(AfterSalePermissions.ReturnReceive)]
     public async Task<ApiResponse<object>> Receive(long id, [FromBody] ReceiveReturnDto dto)
     {
         try
@@ -69,6 +74,7 @@ public class ReturnController : ControllerBase
 
     /// <summary>根据退款单查询关联退货单</summary>
     [HttpGet("by-refund/{refundId:long}")]
+    [Permission(AfterSalePermissions.ReturnList)]
     public async Task<ApiResponse<List<ReturnListDto>>> GetByRefund(long refundId)
     {
         return await _returnService.GetByRefundAsync(refundId);

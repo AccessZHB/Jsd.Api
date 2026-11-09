@@ -23,9 +23,11 @@ namespace Jsd.Api.Services;
 public interface IOrderService
 {
     /// <summary>分页查询订单列表（主表信息 + 商品总数）</summary>
+    /// <param name="lastId">游标分页：上一页最后一条订单ID（传 0 或不传走 page 模式）</param>
     Task<ApiResponse<PagedResult<OrderListDto>>> GetPagedListAsync(
         string? orderNo, int? orderStatus, DateTime? startTime, DateTime? endTime,
-        long? buyerId, string? buyerKeyword, string? receiverKeyword, int page, int pageSize);
+        long? buyerId, string? buyerKeyword, string? receiverKeyword,
+        int page, int pageSize, long? lastId = null);
 
     /// <summary>订单详情（主表 + 明细）</summary>
     Task<ApiResponse<OrderDetailDto>> GetDetailAsync(long id);

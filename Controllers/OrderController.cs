@@ -53,8 +53,9 @@ public class OrderController : ControllerBase
     /// <param name="orderStatus">订单状态：0-待付款 1-已支付 2-已发货 3-已完成 4-已关闭（可空=全部）</param>
     /// <param name="startTime">下单时间起（可空）</param>
     /// <param name="endTime">下单时间止（可空，只传日期自动按当天结束处理）</param>
-    /// <param name="page">页码，默认1</param>
+    /// <param name="page">页码，默认1（大分页请改用 lastId 游标模式）</param>
     /// <param name="pageSize">每页条数，默认10</param>
+    /// <param name="lastId">游标分页：上一页返回的 nextLastId；传值后不再执行 COUNT/OFFSET</param>
     [HttpGet("page")]
     [Permission(OrderPermissions.List)]
     [ProducesResponseType(typeof(ApiResponse<PagedResult<OrderListDto>>), StatusCodes.Status200OK)]
@@ -67,11 +68,12 @@ public class OrderController : ControllerBase
         [FromQuery] string? buyerKeyword,
         [FromQuery] string? receiverKeyword,
         [FromQuery] int page = 1,
-        [FromQuery] int pageSize = 10)
+        [FromQuery] int pageSize = 10,
+        [FromQuery] long? lastId = null)
     {
         return await _orderService.GetPagedListAsync(
             orderNo, orderStatus, startTime, endTime,
-            buyerId, buyerKeyword, receiverKeyword, page, pageSize);
+            buyerId, buyerKeyword, receiverKeyword, page, pageSize, lastId);
     }
 
     /// <summary>

@@ -20,7 +20,7 @@ public class OrderRepository : Repository<TrxOrder>, IOrderRepository
     public async Task<(List<TrxOrder> Items, int Total)> GetPagedListAsync(
         string? orderNo, int? orderStatus, DateTime? startTime, DateTime? endTime,
         long? buyerId, string? buyerKeyword, string? receiverKeyword,
-        int page, int pageSize)
+        int page, int pageSize, long? lastId)
     {
         var query = Db.TrxOrders
             .AsNoTracking()
@@ -70,6 +70,21 @@ public class OrderRepository : Repository<TrxOrder>, IOrderRepository
                 ? endTime.Value.AddDays(1).AddSeconds(-1)
                 : endTime.Value;
             query = query.Where(o => o.CreateTime <= end);
+        }
+
+        // 游标分页（推荐）：lastId > 0 时按主键倒序取下一页，
+        // 不再执行 COUNT(*)，也不再使用 Skip/OFFSET，避免百万级深翻页慢查询。
+        var useCursor = lastId.HasValue && lastId.Value > 0;
+
+        if (useCursor)
+        {
+            var cursorItems = await query
+                .Where(o => o.Id < lastId!.Value)
+                .OrderByDescending(o => o.Id)
+                .Take(pageSize)
+                .ToListAsync();
+
+            return (cursorItems, 0);   // 游标模式不返回总数（由 hasMore/nextLastId 表达）
         }
 
         var total = await query.CountAsync();

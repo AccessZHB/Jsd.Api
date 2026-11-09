@@ -1,3 +1,4 @@
+using Jsd.Api.Attributes;
 using Jsd.Api.Models.AfterSale;
 using Jsd.Api.Models.Common;
 using Jsd.Api.Services;
@@ -28,6 +29,7 @@ public class RefundController : ControllerBase
 
     /// <summary>提交退款申请</summary>
     [HttpPost]
+    [Permission(AfterSalePermissions.RefundCreate)]
     public async Task<ApiResponse<RefundCreateResult>> Create([FromBody] CreateRefundDto dto)
     {
         try
@@ -42,6 +44,7 @@ public class RefundController : ControllerBase
 
     /// <summary>退款列表分页查询</summary>
     [HttpGet("list")]
+    [Permission(AfterSalePermissions.RefundList)]
     public async Task<ApiResponse<PagedResult<RefundListDto>>> GetPage([FromQuery] RefundQueryDto query)
     {
         return await _refundService.GetPagedListAsync(query);
@@ -49,6 +52,7 @@ public class RefundController : ControllerBase
 
     /// <summary>退款详情（含关联退货单与全链路日志）</summary>
     [HttpGet("{id:long}")]
+    [Permission(AfterSalePermissions.RefundList)]
     public async Task<ApiResponse<RefundDetailDto>> GetDetail(long id)
     {
         return await _refundService.GetDetailAsync(id);
@@ -56,6 +60,7 @@ public class RefundController : ControllerBase
 
     /// <summary>审核退款（通过/驳回）</summary>
     [HttpPut("{id:long}/approve")]
+    [Permission(AfterSalePermissions.RefundApprove)]
     public async Task<ApiResponse<object>> Approve(long id, [FromBody] ApproveRefundDto dto)
     {
         try
@@ -70,6 +75,7 @@ public class RefundController : ControllerBase
 
     /// <summary>执行退款（财务打款，幂等）</summary>
     [HttpPost("{id:long}/execute")]
+    [Permission(AfterSalePermissions.RefundExecute)]
     public async Task<ApiResponse<object>> Execute(long id)
     {
         try

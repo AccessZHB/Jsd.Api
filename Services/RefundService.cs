@@ -7,6 +7,7 @@ using Jsd.Api.Models.Order;
 using Jsd.Api.Repositories;
 using Jsd.Api.Validators;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 
 namespace Jsd.Api.Services;
 
@@ -20,10 +21,16 @@ namespace Jsd.Api.Services;
 ///
 /// 【退款类型 refund_type】1-仅退款（不退实物） 2-退货退款（需仓库收货后退款）
 ///
-/// 【事务】所有写操作在单个 SaveChanges 内原子提交（EF 默认事务包裹），
-///        审核通过自动生成退货单、执行退款与退货收货联动均在同一事务内完成。
+/// 【事务】审核、执行、退货收货联动均包裹在 IDbContextTransaction 中，
+///        退款单状态、余额退回、售后日志、订单关闭要么全部成功、要么全部回滚。
 ///
-/// 【幂等】执行退款按 status 判重：已退款(2)直接返回成功，避免财务重复打款。
+/// 【并发】所有状态推进都使用条件更新（乐观锁）抢占：
+///        审核：UPDATE trx_refund SET status=1/3 WHERE id=? AND status=0
+///        执行：UPDATE trx_refund SET status=2 WHERE id=? AND status=1
+///        并发的双击/双开只有一条请求的 affected rows=1，其余直接失败，杜绝重复打款。
+///
+/// 【幂等】余额退回前再查 mkt_balance_log(change_type=3, related_type=3, related_id=退款单)，
+///        即使状态机被绕过也不会重复入账。
 ///
 /// 【留痕】每次状态流转都写 trx_refund_log，与业务数据同事务提交。
 /// </summary>
@@ -228,55 +235,78 @@ public class RefundService : IRefundService
     {
         _approveValidator.ValidateAndThrow(dto);
 
-        var refund = await _refundRepo.GetByIdTrackedAsync(id);
-        if (refund == null)
+        await using var tx = await _db.Database.BeginTransactionAsync();
+        try
         {
-            return ApiResponse<object>.Fail("退款单不存在", 404);
-        }
+            var refund = await _refundRepo.GetByIdTrackedAsync(id);
+            if (refund == null)
+            {
+                await tx.RollbackAsync();
+                return ApiResponse<object>.Fail("退款单不存在", 404);
+            }
 
-        if (refund.Status != (int)RefundStatus.Pending)
-        {
-            return ApiResponse<object>.Fail("仅待审核的退款单可以审核");
-        }
+            if (refund.Status != (int)RefundStatus.Pending)
+            {
+                await tx.RollbackAsync();
+                return ApiResponse<object>.Fail("仅待审核的退款单可以审核");
+            }
 
-        if (dto.Approved)
-        {
-            refund.Status = (int)RefundStatus.Approved;
+            // 乐观锁抢占：并发审核（双击/双开）只有一个请求能把状态 0→1/3，
+            // 其余请求 affected rows=0，直接失败，避免重复审核、重复退款。
+            var targetStatus = dto.Approved ? (int)RefundStatus.Approved : (int)RefundStatus.Rejected;
+            var claimed = await _db.TrxRefunds
+                .Where(r => r.Id == id && r.Status == (int)RefundStatus.Pending)
+                .ExecuteUpdateAsync(s => s
+                    .SetProperty(p => p.Status, targetStatus)
+                    .SetProperty(p => p.HandleTime, DateTime.Now)
+                    .SetProperty(p => p.OperatorId, _currentUser.UserId)
+                    .SetProperty(p => p.AdminRemark, dto.AdminRemark));
+
+            if (claimed == 0)
+            {
+                await tx.RollbackAsync();
+                return ApiResponse<object>.Fail("该退款单已被其他人处理，请刷新后重试");
+            }
+
+            // 仅同步内存态用于后续日志/展示；数据库状态已由上面的条件更新落库
             refund.HandleTime = DateTime.Now;
             refund.OperatorId = _currentUser.UserId;
             refund.AdminRemark = dto.AdminRemark;
-            await AppendLogAsync(refund.Id, RefundLogActions.Approved, _currentUser.UserId,
-                _currentUser.UserName, dto.AdminRemark);
 
-            // 退货退款：审核通过后自动生成一张"待退货"的退货单（仓库收货后才会真正打款）
-            if (refund.RefundType == (int)RefundType.ReturnAndRefund)
+            if (dto.Approved)
             {
-                await CreateReturnFromRefundAsync(refund);
+                await AppendLogAsync(refund.Id, RefundLogActions.Approved, _currentUser.UserId,
+                    _currentUser.UserName, dto.AdminRemark);
+
+                // 退货退款：审核通过后自动生成一张"待退货"的退货单（仓库收货后才会真正打款）
+                if (refund.RefundType == (int)RefundType.ReturnAndRefund)
+                {
+                    await CreateReturnFromRefundAsync(refund);
+                }
+                else
+                {
+                    // 仅退款：审核通过即刻完成资金闭环 —— 余额退回 + 订单关闭，同事务提交
+                    await ExecuteRefundCoreAsync(refund, _currentUser.UserId, _currentUser.UserName);
+                }
             }
             else
             {
-                // 仅退款：审核通过即刻完成资金闭环 —— 原路退回会员余额 + 关闭订单。
-                // 需求要求「管理员点同意后必须触发退款逻辑并关闭订单」，
-                // 因此这里直接复用执行退款核心（幂等：仅 status=1 才会真正打款）。
-                await ExecuteRefundCoreAsync(refund, _currentUser.UserId, _currentUser.UserName);
-                await CloseOrderAfterRefundAsync(refund);
+                await AppendLogAsync(refund.Id, RefundLogActions.Rejected, _currentUser.UserId,
+                    _currentUser.UserName, dto.AdminRemark);
+
+                // 驳回：恢复订单原状（仅当订单仍处于"售后中"时才回滚）
+                await RestoreOrderStatusAsync(refund);
             }
+
+            await _db.SaveChangesAsync();
+            await tx.CommitAsync();
+            return ApiResponse<object>.Success(new { id }, dto.Approved ? "审核通过" : "已驳回");
         }
-        else
+        catch
         {
-            refund.Status = (int)RefundStatus.Rejected;
-            refund.HandleTime = DateTime.Now;
-            refund.OperatorId = _currentUser.UserId;
-            refund.AdminRemark = dto.AdminRemark;
-            await AppendLogAsync(refund.Id, RefundLogActions.Rejected, _currentUser.UserId,
-                _currentUser.UserName, dto.AdminRemark);
-
-            // 驳回：恢复订单原状（回到申请售后之前记录的状态）
-            await RestoreOrderStatusAsync(refund);
+            await tx.RollbackAsync();
+            throw;
         }
-
-        await _db.SaveChangesAsync();
-        return ApiResponse<object>.Success(new { id }, dto.Approved ? "审核通过" : "已驳回");
     }
 
     /// <summary>
@@ -349,38 +379,70 @@ public class RefundService : IRefundService
     // ============================================================
     public async Task<ApiResponse<object>> ExecuteAsync(long id)
     {
-        var refund = await _refundRepo.GetByIdTrackedAsync(id);
-        if (refund == null)
+        await using var tx = await _db.Database.BeginTransactionAsync();
+        try
         {
-            return ApiResponse<object>.Fail("退款单不存在", 404);
-        }
-
-        // 幂等：已退款直接返回成功
-        if (refund.Status == (int)RefundStatus.Refunded)
-        {
-            return ApiResponse<object>.Success(new { id }, "该退款单已退款，无需重复执行");
-        }
-
-        if (refund.Status != (int)RefundStatus.Approved)
-        {
-            return ApiResponse<object>.Fail(
-                $"仅待退款状态的退款单可执行（当前：{RefundStatusHelper.GetName(refund.Status)}）");
-        }
-
-        // 退货退款：必须等仓库收货后才能打款
-        if (refund.RefundType == (int)RefundType.ReturnAndRefund)
-        {
-            var received = await _returnRepo.GetByRefundIdAsync(refund.Id);
-            if (!received.Any(r => r.Status == (int)ReturnStatus.Received))
+            var refund = await _refundRepo.GetByIdTrackedAsync(id);
+            if (refund == null)
             {
-                return ApiResponse<object>.Fail("退货退款需仓库收货后方可执行退款");
+                await tx.RollbackAsync();
+                return ApiResponse<object>.Fail("退款单不存在", 404);
             }
+
+            // 幂等：已退款直接返回成功
+            if (refund.Status == (int)RefundStatus.Refunded)
+            {
+                await tx.RollbackAsync();
+                return ApiResponse<object>.Success(new { id }, "该退款单已退款，无需重复执行");
+            }
+
+            if (refund.Status != (int)RefundStatus.Approved)
+            {
+                await tx.RollbackAsync();
+                return ApiResponse<object>.Fail(
+                    $"仅待退款状态的退款单可执行（当前：{RefundStatusHelper.GetName(refund.Status)}）");
+            }
+
+            // 退货退款：必须等仓库收货后才能打款
+            if (refund.RefundType == (int)RefundType.ReturnAndRefund)
+            {
+                var received = await _returnRepo.GetByRefundIdAsync(refund.Id);
+                if (!received.Any(r => r.Status == (int)ReturnStatus.Received))
+                {
+                    await tx.RollbackAsync();
+                    return ApiResponse<object>.Fail("退货退款需仓库收货后方可执行退款");
+                }
+            }
+
+            // 乐观锁抢占 1-待退款 → 2-已退款：并发执行（双击/双开）只有一个请求能打款
+            var claimed = await _db.TrxRefunds
+                .Where(r => r.Id == id && r.Status == (int)RefundStatus.Approved)
+                .ExecuteUpdateAsync(s => s
+                    .SetProperty(p => p.Status, (int)RefundStatus.Refunded)
+                    .SetProperty(p => p.RefundTime, DateTime.Now)
+                    .SetProperty(p => p.OperatorId, _currentUser.UserId));
+
+            if (claimed == 0)
+            {
+                await tx.RollbackAsync();
+                var currentStatus = await _db.TrxRefunds.AsNoTracking()
+                    .Where(r => r.Id == id).Select(r => r.Status).FirstOrDefaultAsync();
+                return currentStatus == (int)RefundStatus.Refunded
+                    ? ApiResponse<object>.Success(new { id }, "该退款单已退款，无需重复执行")
+                    : ApiResponse<object>.Fail("该退款单已被其他人处理，请刷新后重试");
+            }
+
+            await ExecuteRefundCoreAsync(refund, _currentUser.UserId, _currentUser.UserName);
+            await _db.SaveChangesAsync();
+            await tx.CommitAsync();
+
+            return ApiResponse<object>.Success(new { id }, "退款执行成功");
         }
-
-        await ExecuteRefundCoreAsync(refund, _currentUser.UserId, _currentUser.UserName);
-        await _db.SaveChangesAsync();
-
-        return ApiResponse<object>.Success(new { id }, "退款执行成功");
+        catch
+        {
+            await tx.RollbackAsync();
+            throw;
+        }
     }
 
     /// <summary>
@@ -405,12 +467,22 @@ public class RefundService : IRefundService
             CreateTime = DateTime.Now
         });
 
-        // 退款金额退回会员可用余额（幂等由调用方的状态机保证：仅 status=1 才可执行）
-        if (refund.RefundAmount > 0)
+        // 余额退回幂等：同一退款单只允许一条 change_type=3、related_type=3 的退回流水。
+        // 状态机抢占已保证单次执行，这里再做一道账面兜底，防止异常重放造成重复入账。
+        var alreadyCredited = await _db.MktBalanceLogs.AsNoTracking().AnyAsync(l =>
+            l.ChangeType == 3 &&
+            l.RelatedType == 3 &&
+            l.RelatedId == refund.Id);
+
+        if (refund.RefundAmount > 0 && !alreadyCredited)
         {
             await _balanceService.RefundBackAsync(
                 refund.MemberId, refund.RefundAmount, refund.Id, $"退款单 {refund.RefundNo} 退回余额");
         }
+
+        // 售后闭环：退款完成即关闭订单。仅当订单仍为 5-售后中 时更新，
+        // 避免覆盖"用户取消(4)/已完成(3)"等由其他链路设置的终态。
+        await CloseOrderAfterRefundAsync(refund);
     }
 
     // ============================================================
@@ -603,24 +675,22 @@ public class RefundService : IRefundService
     /// <summary>仅退款审核通过后关闭订单（钱已退回，订单终止）</summary>
     private async Task CloseOrderAfterRefundAsync(TrxRefund refund)
     {
-        var order = await _orderRepo.FirstOrDefaultAsync(o => o.Id == refund.OrderId);
-        if (order == null)
-        {
-            return;
-        }
-        order.OrderStatus = OrderStatuses.Closed;
+        // 条件更新：只把仍处于 5-售后中 的订单关闭，
+        // 已完成(3)/已关闭(4) 等终态不受影响，也不会和用户取消等并发操作互相覆盖。
+        await _db.TrxOrders
+            .Where(o => o.Id == refund.OrderId && o.OrderStatus == OrderStatuses.AfterSale)
+            .ExecuteUpdateAsync(s => s.SetProperty(p => p.OrderStatus, OrderStatuses.Closed));
     }
 
     /// <summary>审核驳回后恢复订单原状（仅当订单仍处于"售后中"时才回滚，避免并发误改）</summary>
     private async Task RestoreOrderStatusAsync(TrxRefund refund)
     {
-        var order = await _orderRepo.FirstOrDefaultAsync(o => o.Id == refund.OrderId);
-        if (order == null || order.OrderStatus != OrderStatuses.AfterSale)
-        {
-            return;
-        }
-        // 优先用申请时记录的原状态；老数据无记录时兜底回"已完成"
-        order.OrderStatus = refund.OriginalOrderStatus ?? OrderStatuses.Completed;
+        var original = refund.OriginalOrderStatus ?? OrderStatuses.Completed;
+
+        // 条件更新：订单已不在"售后中"（例如已被其他链路推进）时不做任何覆盖
+        await _db.TrxOrders
+            .Where(o => o.Id == refund.OrderId && o.OrderStatus == OrderStatuses.AfterSale)
+            .ExecuteUpdateAsync(s => s.SetProperty(p => p.OrderStatus, original));
     }
 
     // ============================================================

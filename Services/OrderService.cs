@@ -103,13 +103,15 @@ public class OrderService : IOrderService
     public async Task<ApiResponse<PagedResult<OrderListDto>>> GetPagedListAsync(
         string? orderNo, int? orderStatus, DateTime? startTime, DateTime? endTime,
         long? buyerId, string? buyerKeyword, string? receiverKeyword,
-        int page, int pageSize)
+        int page, int pageSize, long? lastId = null)
     {
         if (page < 1) page = 1;
         if (pageSize < 1 || pageSize > 100) pageSize = 10;
 
+        var cursorMode = lastId.HasValue && lastId.Value > 0;
+
         var (orders, total) = await _orderRepository.GetPagedListAsync(
-            orderNo, orderStatus, startTime, endTime, buyerId, buyerKeyword, receiverKeyword, page, pageSize);
+            orderNo, orderStatus, startTime, endTime, buyerId, buyerKeyword, receiverKeyword, page, pageSize, lastId);
 
         var list = orders.Select(MapToListDto).ToList();
 
@@ -153,8 +155,16 @@ public class OrderService : IOrderService
             }
         }
 
-        return ApiResponse<PagedResult<OrderListDto>>.Success(
-            PagedResult<OrderListDto>.Create(list, total, page, pageSize));
+        // 游标模式不再统计总数，用 hasMore + nextLastId 驱动前端「加载更多」
+        var result = PagedResult<OrderListDto>.Create(list, cursorMode ? 0 : total, page, pageSize);
+        if (cursorMode)
+        {
+            result.Page = 0;
+            result.HasMore = list.Count == pageSize;
+            result.NextLastId = list.Count > 0 ? list[^1].Id : null;
+        }
+
+        return ApiResponse<PagedResult<OrderListDto>>.Success(result);
     }
 
     // ============================================================
@@ -1313,10 +1323,10 @@ public class OrderService : IOrderService
     {
         // 先取命中总数，再一次性拉取（上限 5000）
         var (_, total) = await _orderRepository.GetPagedListAsync(
-            orderNo, orderStatus, startTime, endTime, null, buyerKeyword, receiverKeyword, 1, 1);
+            orderNo, orderStatus, startTime, endTime, null, buyerKeyword, receiverKeyword, 1, 1, null);
         var take = Math.Max(1, Math.Min(total, 5000));
         var (orders, _) = await _orderRepository.GetPagedListAsync(
-            orderNo, orderStatus, startTime, endTime, null, buyerKeyword, receiverKeyword, 1, take);
+            orderNo, orderStatus, startTime, endTime, null, buyerKeyword, receiverKeyword, 1, take, null);
 
         var list = orders.Select(MapToListDto).ToList();
 
