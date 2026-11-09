@@ -45,8 +45,8 @@ public class PriceRule
     [Column("calc_type")]
     public int CalcType { get; set; }
 
-    /// <summary>计算值（固定价=单价；折扣率=0.8500 表示 85 折；减免金额=立减元）</summary>
-    [Column("calc_value", TypeName = "decimal(10,2)")]
+    /// <summary>计算值（固定价=单价；折扣率=0.8500 表示 85 折；减免金额=立减元）。统一保留 4 位小数，与数据库 DECIMAL(10,4) 对齐</summary>
+    [Column("calc_value", TypeName = "decimal(10,4)")]
     public decimal CalcValue { get; set; }
 
     /// <summary>底价保护（最终价低于此值时仅打标不拦截）</summary>

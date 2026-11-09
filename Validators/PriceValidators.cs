@@ -138,13 +138,25 @@ public class PriceRuleItemInputValidator : AbstractValidator<PriceRuleItemInputD
             .GreaterThanOrEqualTo(0).When(x => x.Price.HasValue)
             .WithMessage("阶梯单价不能为负数");
 
+        RuleFor(x => x.Price)
+            .Must(v => !v.HasValue || decimal.Round(v.Value, 2) == v.Value)
+            .WithMessage("阶梯单价最多保留 2 位小数");
+
         RuleFor(x => x.Discount)
             .GreaterThan(0).LessThanOrEqualTo(1).When(x => x.Discount.HasValue)
             .WithMessage("阶梯折扣必须在 0~1 之间");
 
+        RuleFor(x => x.Discount)
+            .Must(v => !v.HasValue || decimal.Round(v.Value, 4) == v.Value)
+            .WithMessage("阶梯折扣最多保留 4 位小数");
+
         RuleFor(x => x.ReduceAmount)
             .GreaterThanOrEqualTo(0).When(x => x.ReduceAmount.HasValue)
             .WithMessage("阶梯减免金额不能为负数");
+
+        RuleFor(x => x.ReduceAmount)
+            .Must(v => !v.HasValue || decimal.Round(v.Value, 2) == v.Value)
+            .WithMessage("阶梯减免金额最多保留 2 位小数");
     }
 }
 
@@ -161,6 +173,13 @@ public class PriceRuleInputValidator : AbstractValidator<PriceRuleInputDto>
             .Must(t => t is >= 1 and <= 3)
             .WithMessage("计算方式非法（1-固定价 2-折扣率 3-减免金额）");
 
+        // calc_value 统一保留 4 位小数（数据库 DECIMAL(10,4)）：
+        //  固定价/减免按金额传 2 位即可，折扣率需精确到 4 位（如 0.8765）。
+        // 在此硬卡小数位，避免前端传 5 位以上被 DB 截断造成财务误差。
+        RuleFor(x => x.CalcValue)
+            .Must(v => decimal.Round(v, 4) == v)
+            .WithMessage("计算值最多保留 4 位小数（折扣率请精确到万分位）");
+
         // 折扣率口径：0 < value <= 1；固定价/减免口径：value >= 0
         RuleFor(x => x.CalcValue)
             .GreaterThan(0).LessThanOrEqualTo(1).When(x => x.CalcType == (int)CalcType.Discount)
@@ -169,6 +188,11 @@ public class PriceRuleInputValidator : AbstractValidator<PriceRuleInputDto>
         RuleFor(x => x.CalcValue)
             .GreaterThanOrEqualTo(0).When(x => x.CalcType != (int)CalcType.Discount)
             .WithMessage("计算值不能为负数");
+
+        // 底价保护是金额，保留 2 位小数
+        RuleFor(x => x.MinPrice)
+            .Must(v => !v.HasValue || decimal.Round(v.Value, 2) == v.Value)
+            .WithMessage("底价保护最多保留 2 位小数");
 
         RuleFor(x => x.MinPrice)
             .GreaterThanOrEqualTo(0).When(x => x.MinPrice.HasValue)

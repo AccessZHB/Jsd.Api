@@ -1,3 +1,4 @@
+using Jsd.Api.Attributes;
 using Jsd.Api.Models.Common;
 using Jsd.Api.Models.Price;
 using Jsd.Api.Services;
@@ -27,6 +28,7 @@ public class MemberLevelController : ControllerBase
 
     /// <summary>分页查询客户等级（支持状态、关键字筛选）</summary>
     [HttpGet]
+    [Permission(PricePermissions.MemberLevelList)]
     public async Task<ApiResponse<PagedResult<MemberLevelDto>>> GetPage([FromQuery] MemberLevelQueryDto query)
     {
         return await _priceService.GetLevelsAsync(query);
@@ -34,6 +36,7 @@ public class MemberLevelController : ControllerBase
 
     /// <summary>新增客户等级（level_code 唯一）</summary>
     [HttpPost]
+    [Permission(PricePermissions.MemberLevelAdd)]
     public async Task<ApiResponse<long>> Create([FromBody] CreateMemberLevelDto dto)
     {
         try
@@ -48,6 +51,7 @@ public class MemberLevelController : ControllerBase
 
     /// <summary>更新客户等级</summary>
     [HttpPut("{id:long}")]
+    [Permission(PricePermissions.MemberLevelEdit)]
     public async Task<ApiResponse<bool>> Update(long id, [FromBody] UpdateMemberLevelDto dto)
     {
         try
@@ -62,6 +66,7 @@ public class MemberLevelController : ControllerBase
 
     /// <summary>启用/停用客户等级</summary>
     [HttpPatch("{id:long}/status")]
+    [Permission(PricePermissions.MemberLevelStatus)]
     public async Task<ApiResponse<bool>> UpdateStatus(long id, [FromBody] MemberLevelStatusDto dto)
     {
         return await _priceService.UpdateLevelStatusAsync(id, dto);

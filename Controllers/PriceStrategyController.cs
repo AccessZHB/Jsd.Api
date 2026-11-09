@@ -1,3 +1,4 @@
+using Jsd.Api.Attributes;
 using Jsd.Api.Models.Common;
 using Jsd.Api.Models.Price;
 using Jsd.Api.Services;
@@ -28,6 +29,7 @@ public class PriceStrategyController : ControllerBase
 
     /// <summary>分页查询价格策略（类型 / 状态 / 关键字 / 日期范围）</summary>
     [HttpGet]
+    [Permission(PricePermissions.StrategyList)]
     public async Task<ApiResponse<PagedResult<PriceStrategyDto>>> GetPage([FromQuery] PriceStrategyQueryDto query)
     {
         return await _priceService.GetStrategiesAsync(query);
@@ -35,6 +37,7 @@ public class PriceStrategyController : ControllerBase
 
     /// <summary>新增价格策略（默认草稿，自动生成 strategy_no）</summary>
     [HttpPost]
+    [Permission(PricePermissions.StrategyAdd)]
     public async Task<ApiResponse<long>> Create([FromBody] CreatePriceStrategyDto dto)
     {
         try
@@ -49,6 +52,7 @@ public class PriceStrategyController : ControllerBase
 
     /// <summary>更新策略基本信息（仅草稿可改）</summary>
     [HttpPut("{id:long}")]
+    [Permission(PricePermissions.StrategyEdit)]
     public async Task<ApiResponse<bool>> Update(long id, [FromBody] UpdatePriceStrategyDto dto)
     {
         try
@@ -63,6 +67,7 @@ public class PriceStrategyController : ControllerBase
 
     /// <summary>草稿提交启用（校验规则完整性）</summary>
     [HttpPatch("{id:long}/submit")]
+    [Permission(PricePermissions.StrategySubmit)]
     public async Task<ApiResponse<bool>> Submit(long id)
     {
         return await _priceService.SubmitStrategyAsync(id);
@@ -70,6 +75,7 @@ public class PriceStrategyController : ControllerBase
 
     /// <summary>停用策略（记录变更日志）</summary>
     [HttpPatch("{id:long}/disable")]
+    [Permission(PricePermissions.StrategyDisable)]
     public async Task<ApiResponse<bool>> Disable(long id, [FromBody] DisableStrategyDto? dto)
     {
         return await _priceService.DisableStrategyAsync(id, dto?.Reason);
@@ -77,6 +83,7 @@ public class PriceStrategyController : ControllerBase
 
     /// <summary>删除策略（仅草稿）</summary>
     [HttpDelete("{id:long}")]
+    [Permission(PricePermissions.StrategyDelete)]
     public async Task<ApiResponse<bool>> Delete(long id)
     {
         return await _priceService.DeleteStrategyAsync(id);
@@ -84,6 +91,7 @@ public class PriceStrategyController : ControllerBase
 
     /// <summary>查询策略下的规则及明细</summary>
     [HttpGet("{id:long}/rules")]
+    [Permission(PricePermissions.StrategyList)]
     public async Task<ApiResponse<List<PriceRuleDto>>> GetRules(long id)
     {
         return await _priceService.GetRulesAsync(id);
@@ -91,6 +99,7 @@ public class PriceStrategyController : ControllerBase
 
     /// <summary>批量维护规则及明细（全量覆盖，事务内执行）</summary>
     [HttpPost("{id:long}/rules/batch")]
+    [Permission(PricePermissions.RuleBatchSave)]
     public async Task<ApiResponse<bool>> SaveRulesBatch(long id, [FromBody] PriceRuleBatchSaveDto dto)
     {
         try

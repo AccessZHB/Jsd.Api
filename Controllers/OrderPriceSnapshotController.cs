@@ -1,3 +1,4 @@
+using Jsd.Api.Attributes;
 using Jsd.Api.Models.Common;
 using Jsd.Api.Models.Price;
 using Jsd.Api.Services;
@@ -28,14 +29,16 @@ public class OrderPriceSnapshotController : ControllerBase
 
     /// <summary>分页查询订单价格快照（订单号 / 客户 / 商品 / 命中策略类型 / 时间范围）</summary>
     [HttpGet]
+    [Permission(PricePermissions.SnapshotList)]
     public async Task<ApiResponse<PagedResult<OrderPriceSnapshotDto>>> GetPage(
         [FromQuery] OrderPriceSnapshotQueryDto query)
     {
         return await _priceService.GetSnapshotsPagedAsync(query);
     }
 
-    /// <summary>内部接口：下单时批量写入价格快照</summary>
+    /// <summary>内部接口：下单时批量写入价格快照（仅限财务/超管，防止伪造历史价格）</summary>
     [HttpPost("batch")]
+    [Permission(PricePermissions.SnapshotWrite)]
     public async Task<ApiResponse<bool>> SaveBatch([FromBody] OrderPriceSnapshotBatchDto dto)
     {
         return await _priceService.SaveSnapshotsAsync(dto);
@@ -43,6 +46,7 @@ public class OrderPriceSnapshotController : ControllerBase
 
     /// <summary>按订单查询价格快照（历史价格追溯）</summary>
     [HttpGet("order/{orderId:long}")]
+    [Permission(PricePermissions.SnapshotList)]
     public async Task<ApiResponse<List<OrderPriceSnapshotDto>>> GetByOrder(long orderId)
     {
         return await _priceService.GetSnapshotsAsync(orderId);

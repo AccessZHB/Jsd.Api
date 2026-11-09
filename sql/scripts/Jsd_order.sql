@@ -3629,3 +3629,35 @@ WHERE table_schema = DATABASE()
   AND table_name = 'trx_order'
 GROUP BY index_name, non_unique
 ORDER BY index_name;
+
+
+
+
+
+
+
+
+
+
+
+
+
+SELECT column_name, column_type, is_nullable, column_default
+FROM information_schema.columns
+WHERE table_schema = DATABASE()
+  AND table_name = 'price_rule'
+  AND column_name = 'calc_value';
+
+
+-- ---------- 1. 修改列精度 ----------
+ALTER TABLE price_rule
+    MODIFY COLUMN calc_value DECIMAL(10,4) NOT NULL DEFAULT 0.0000
+    COMMENT '计算值：固定价=元、折扣率=0.8500、减免额=元';
+
+
+-- ---------- 2. 执行后校验 ----------
+SELECT column_name, column_type, is_nullable, column_default
+FROM information_schema.columns
+WHERE table_schema = DATABASE()
+  AND table_name = 'price_rule'
+  AND column_name = 'calc_value';

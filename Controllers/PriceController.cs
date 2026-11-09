@@ -1,3 +1,4 @@
+using Jsd.Api.Attributes;
 using Jsd.Api.Models.Common;
 using Jsd.Api.Models.Price;
 using Jsd.Api.Services;
@@ -30,6 +31,7 @@ public class PriceController : ControllerBase
     /// 核心取价：入参会员ID + 商品清单（物料ID + 数量），返回逐行最终成交价与命中详情。
     /// </summary>
     [HttpPost("api/price/quotation")]
+    [Permission(PricePermissions.Quotation)]
     public async Task<ApiResponse<List<QuotationResultDto>>> Quotation([FromBody] QuotationRequestDto dto)
     {
         try
@@ -51,6 +53,7 @@ public class PriceController : ControllerBase
     /// keyword 为空时返回最近 50 个启用 SKU。
     /// </summary>
     [HttpGet("api/price/materials")]
+    [Permission(PricePermissions.StrategyList)]
     public async Task<ApiResponse<List<MaterialOptionDto>>> GetMaterials(
         [FromQuery] string? keyword, [FromQuery] int limit = 50)
     {
@@ -59,6 +62,7 @@ public class PriceController : ControllerBase
 
     /// <summary>分页查询价格变更日志（策略/规则/操作类型/时间范围筛选）</summary>
     [HttpGet("api/price-change-logs")]
+    [Permission(PricePermissions.ChangeLogList)]
     public async Task<ApiResponse<PagedResult<PriceChangeLogDto>>> GetChangeLogs([FromQuery] PriceChangeLogQueryDto query)
     {
         return await _priceService.GetChangeLogsAsync(query);

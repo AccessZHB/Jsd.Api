@@ -81,7 +81,7 @@ CREATE TABLE IF NOT EXISTS `price_rule` (
   `apply_scope`       TINYINT         NOT NULL DEFAULT 1      COMMENT '1-全部商品 2-指定分类 3-指定商品',
   `category_id`       BIGINT UNSIGNED DEFAULT NULL            COMMENT '分类ID（apply_scope=2 时填，prod_category.id）',
   `calc_type`         TINYINT         NOT NULL DEFAULT 2      COMMENT '1-固定价 2-折扣率 3-减免金额',
-  `calc_value`        DECIMAL(10,2)   NOT NULL DEFAULT 0.00   COMMENT '计算值（固定价=单价 / 折扣率=0.85 / 减免=金额）',
+  `calc_value`        DECIMAL(10,4)   NOT NULL DEFAULT 0.0000 COMMENT '计算值（固定价=单价 / 折扣率=0.8500 / 减免=金额，统一4位小数）',
   `min_price`         DECIMAL(10,2)   DEFAULT NULL            COMMENT '底价保护（低于此值仅打标不拦截）',
   `status`            TINYINT         NOT NULL DEFAULT 1      COMMENT '状态：0-停用 1-启用',
   `create_time`       DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
