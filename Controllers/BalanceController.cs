@@ -47,10 +47,22 @@ public class BalanceController : ControllerBase
         return await _balanceService.GetMemberBalanceAsync(memberId);
     }
 
-    /// <summary>分页查询余额流水（会员 / 变动类型 / 关联业务 / 时间范围）</summary>
+    /// <summary>
+    /// 【P0-3 修复】分页查询余额流水。
+    /// 安全：必须具备 finance:balance:log 权限；会员令牌强制只查自己的流水，
+    ///       绝不允许空条件导出全平台资金流水。
+    /// </summary>
     [HttpGet("logs")]
+    [Permission(RechargePermissions.BalanceLog)]
     public async Task<ApiResponse<PagedResult<BalanceLogDto>>> GetLogs([FromQuery] BalanceLogQueryDto query)
     {
+        // 会员令牌：强制归属当前会员，覆盖前端传值，杜绝越权查看他人流水
+        if (_currentUser.IsMember)
+        {
+            query.MemMemberId = _currentUser.MemberId;
+            query.Keyword = null;   // 会员不允许按他人姓名/编号模糊查询
+        }
+
         return await _balanceService.GetLogsAsync(query);
     }
 

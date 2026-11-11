@@ -1,3 +1,6 @@
+using System.IO;
+using System.Text;
+using System.Text.Json;
 using AutoMapper;
 using FluentValidation;
 using Jsd.Api.Entities;
@@ -5,10 +8,14 @@ using Jsd.Api.Exceptions;
 using Jsd.Api.Models.Common;
 using Jsd.Api.Models.Price;
 using Jsd.Api.Models.Wallet;
+using Jsd.Api.Models.Payment;
 using Jsd.Api.Repositories;
 using Jsd.Api.Validators;
+using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging;
 
 namespace Jsd.Api.Services;
 
@@ -55,11 +62,17 @@ public class BalanceService : IBalanceService
     private readonly IRepository<MemMember> _memberRepo;
     private readonly IMapper _mapper;
     private readonly CurrentUserService _currentUser;
+    private readonly IConfiguration _configuration;
+    private readonly ILogger<BalanceService> _logger;
     private readonly RechargeCreateValidator _rechargeValidator;
     private readonly AdminAdjustBalanceValidator _adjustValidator;
     private readonly FreezeBalanceValidator _freezeValidator;
     private readonly UnfreezeBalanceValidator _unfreezeValidator;
     private readonly DeductBalanceValidator _deductValidator;
+
+    // 微信支付 V3 配置（与订单支付回调共用 appsettings:WeChatPay 节）
+    private readonly string _platformPublicKey;
+    private readonly string _apiV3Key;
 
     public BalanceService(
         AppDbContext db,
@@ -68,6 +81,8 @@ public class BalanceService : IBalanceService
         IRepository<MemMember> memberRepo,
         IMapper mapper,
         CurrentUserService currentUser,
+        IConfiguration configuration,
+        ILogger<BalanceService> logger,
         RechargeCreateValidator rechargeValidator,
         AdminAdjustBalanceValidator adjustValidator,
         FreezeBalanceValidator freezeValidator,
@@ -80,11 +95,17 @@ public class BalanceService : IBalanceService
         _memberRepo = memberRepo;
         _mapper = mapper;
         _currentUser = currentUser;
+        _configuration = configuration;
+        _logger = logger;
         _rechargeValidator = rechargeValidator;
         _adjustValidator = adjustValidator;
         _freezeValidator = freezeValidator;
         _unfreezeValidator = unfreezeValidator;
         _deductValidator = deductValidator;
+
+        var sec = configuration.GetSection("WeChatPay");
+        _platformPublicKey = sec["PlatformPublicKey"] ?? string.Empty;
+        _apiV3Key = sec["ApiV3Key"] ?? string.Empty;
     }
 
     // ============================================================
@@ -166,11 +187,78 @@ public class BalanceService : IBalanceService
     }
 
     /// <summary>
-    /// 微信支付回调：幂等 + 事务入账。
+    /// 【P0-1 修复】微信支付回调（原始 HTTP 请求）：验签 → 解密 → 入账。
+    /// 严格执行以下安全步骤，缺一不可：
+    ///   1) 读取原始请求体（用于验签）；
+    ///   2) 读取微信回调签名头（Wechatpay-Timestamp/Nonce/Signature/Serial）；
+    ///   3) 用微信【平台证书公钥】验签（RSA-SHA256），验签失败直接拒绝，绝不入账；
+    ///   4) 解密 resource（AES-256-GCM，APIv3 密钥）得到交易明文；
+    ///   5) 校验 trade_state=SUCCESS、金额（分→元）与充值单本金一致；
+    ///   6) 基于 transaction_id 幂等判重（唯一索引兜底）后入账。
+    /// </summary>
+    public async Task<WechatNotifyResultDto> HandleWechatNotifyRawAsync(HttpRequest request)
+    {
+        // 1) 读取原始请求体（必须读原文，验签依赖完整 body）
+        string body;
+        using (var reader = new StreamReader(request.Body, Encoding.UTF8))
+        {
+            body = await reader.ReadToEndAsync();
+        }
+
+        // 2) 读取微信回调签名头
+        var timestamp = request.Headers["Wechatpay-Timestamp"].ToString();
+        var nonce = request.Headers["Wechatpay-Nonce"].ToString();
+        var signature = request.Headers["Wechatpay-Signature"].ToString();
+        var serial = request.Headers["Wechatpay-Serial"].ToString();
+
+        // 未配置微信支付 → 直接失败（避免无密钥时漏验签）
+        if (string.IsNullOrWhiteSpace(_platformPublicKey) || string.IsNullOrWhiteSpace(_apiV3Key))
+        {
+            _logger.LogWarning("充值回调拒绝：微信支付未配置（WeChatPay 节缺失）");
+            return new WechatNotifyResultDto { Success = false, Message = "微信支付未配置" };
+        }
+
+        // 3) 验签：用微信平台证书公钥验 RSA-SHA256 签名
+        if (!WeChatPayCrypto.VerifySignature(timestamp, nonce, body, signature, _platformPublicKey))
+        {
+            _logger.LogWarning("充值回调验签失败，serial={Serial}", serial);
+            return new WechatNotifyResultDto { Success = false, Message = "验签失败" };
+        }
+
+        // 4) 解密 resource 得到交易明文
+        WeChatPayTransactionDto? txn;
+        try
+        {
+            txn = DecodeRechargeNotifyBody(body, _apiV3Key);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "充值回调解密失败");
+            return new WechatNotifyResultDto { Success = false, Message = $"回调解密失败：{ex.Message}" };
+        }
+
+        // 5) 转换为内部通知 DTO：amount 由分转元，trade_state 映射为 resultCode
+        var notifyDto = new WechatNotifyDto
+        {
+            OutTradeNo = txn.OutTradeNo,
+            TransactionId = txn.TransactionId,
+            ResultCode = txn.TradeState,   // SUCCESS / CLOSED / PAYERROR ...
+            Amount = txn.Total / 100m      // 分 → 元
+        };
+
+        // 6) 入账（幂等 + 事务 + 金额一致性校验在 ProcessRechargeNotifyAsync 内完成）
+        _logger.LogInformation("充值回调验签通过，rechargeNo={No}, txnId={Txn}, amount={Amount}",
+            notifyDto.OutTradeNo, notifyDto.TransactionId, notifyDto.Amount);
+
+        return await ProcessRechargeNotifyAsync(notifyDto);
+    }
+
+    /// <summary>
+    /// 充值回调入账核心逻辑（供验签通过后的内部调用，不信任外部直连）。
     /// 入账内容：status→已支付、pay_time 写入、balance += 本金+赠送、total_recharge += 本金、写余额流水。
     /// 重复回调（同一 transaction_id）直接返回成功，绝不做二次入账。
     /// </summary>
-    public async Task<WechatNotifyResultDto> HandleWechatNotifyAsync(WechatNotifyDto dto)
+    private async Task<WechatNotifyResultDto> ProcessRechargeNotifyAsync(WechatNotifyDto dto)
     {
         if (dto == null || string.IsNullOrWhiteSpace(dto.OutTradeNo))
         {
@@ -1210,6 +1298,41 @@ public class BalanceService : IBalanceService
                 .SetProperty(p => p.Balance, newBalance)
                 .SetProperty(p => p.FrozenBalance, newFrozen));
         return rows == 1;
+    }
+
+    /// <summary>
+    /// 解析微信充值回调密文 body → 交易明文对象。
+    /// 结构与订单支付回调一致：外层 resource（AEAD_AES_256_GCM 加密），
+    /// 用 APIv3 密钥解密后得到 out_trade_no / transaction_id / trade_state / amount.total。
+    /// </summary>
+    private static WeChatPayTransactionDto DecodeRechargeNotifyBody(string body, string apiV3Key)
+    {
+        using var doc = JsonDocument.Parse(body);
+        var root = doc.RootElement;
+
+        var resource = root.GetProperty("resource");
+        var algorithm = resource.GetProperty("algorithm").GetString();
+        if (!string.Equals(algorithm, "AEAD_AES_256_GCM", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException($"不支持的加密算法：{algorithm}");
+        }
+
+        var ciphertext = resource.GetProperty("ciphertext").GetString()!;
+        var nonce = resource.GetProperty("nonce").GetString()!;
+        var associatedData = resource.TryGetProperty("associated_data", out var ad) ? ad.GetString() : null;
+
+        var plain = WeChatPayCrypto.DecryptResource(ciphertext, nonce, associatedData, apiV3Key);
+
+        using var txDoc = JsonDocument.Parse(plain);
+        var tx = txDoc.RootElement;
+
+        return new WeChatPayTransactionDto
+        {
+            OutTradeNo = tx.GetProperty("out_trade_no").GetString() ?? string.Empty,
+            TransactionId = tx.TryGetProperty("transaction_id", out var tid) ? tid.GetString() : null,
+            TradeState = tx.TryGetProperty("trade_state", out var ts) ? ts.GetString() ?? string.Empty : string.Empty,
+            Total = tx.TryGetProperty("amount", out var amt) && amt.TryGetProperty("total", out var t) ? t.GetInt32() : 0
+        };
     }
 
     /// <summary>写入余额流水（不落库，随调用方事务提交）</summary>

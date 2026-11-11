@@ -1,6 +1,7 @@
 using Jsd.Api.Models.Common;
 using Jsd.Api.Models.Price;
 using Jsd.Api.Models.Wallet;
+using Microsoft.AspNetCore.Http;
 
 namespace Jsd.Api.Services;
 
@@ -24,8 +25,8 @@ public interface IBalanceService
     /// <summary>创建充值订单（生成 recharge_no，返回支付参数）</summary>
     Task<ApiResponse<RechargePayParamsDto>> CreateRechargeAsync(RechargeCreateDto dto);
 
-    /// <summary>微信支付回调：幂等校验后事务内入账（balance + gift、total_recharge 累加、写流水）</summary>
-    Task<WechatNotifyResultDto> HandleWechatNotifyAsync(WechatNotifyDto dto);
+    /// <summary>微信支付回调（原始请求）：验签 → 解密 → 幂等入账（balance + gift、写流水）。P0-1 修复入口。</summary>
+    Task<WechatNotifyResultDto> HandleWechatNotifyRawAsync(HttpRequest request);
 
     /// <summary>分页查询充值记录（后台充值管理列表）</summary>
     Task<ApiResponse<PagedResult<RechargeDto>>> GetRechargesAsync(RechargeQueryDto q);
