@@ -26,30 +26,34 @@ public class SystemOperationLogController : ControllerBase
         _logService = logService;
     }
 
-    /// <summary>操作日志分页查询（操作人/模块/动作/状态/时间范围，create_time 倒序）</summary>
+    /// <summary>操作日志分页查询（操作人/模块/动作/状态/时间范围，create_time 倒序；权限：system:log:list）</summary>
     [HttpGet("list")]
+    [Permission(SystemPermissions.OperationLogList)]
     public async Task<ApiResponse<PagedResult<OperationLogDto>>> GetList([FromQuery] OperationLogQueryDto query)
     {
         return await _logService.GetOperationLogsAsync(query);
     }
 
-    /// <summary>操作日志详情（含请求参数、响应结果、异常堆栈）</summary>
+    /// <summary>操作日志详情（含请求参数、响应结果、异常堆栈；权限：system:log:list）</summary>
     [HttpGet("{id:long}")]
+    [Permission(SystemPermissions.OperationLogList)]
     public async Task<ApiResponse<OperationLogDetailDto>> GetDetail(long id)
     {
         return await _logService.GetOperationLogDetailAsync(id);
     }
 
-    /// <summary>删除单条操作日志（仅超管）</summary>
+    /// <summary>删除单条操作日志（权限：system:log:remove，仅超管）</summary>
     [HttpDelete("{id:long}")]
+    [Permission(SystemPermissions.OperationLogRemove)]
     [OperationLog("系统管理", "删除操作日志")]
     public async Task<ApiResponse<bool>> Delete(long id)
     {
         return await _logService.DeleteOperationLogAsync(id);
     }
 
-    /// <summary>批量删除操作日志（仅超管）</summary>
+    /// <summary>批量删除操作日志（权限：system:log:remove，仅超管）</summary>
     [HttpDelete("batch")]
+    [Permission(SystemPermissions.OperationLogRemove)]
     [OperationLog("系统管理", "批量删除操作日志")]
     public async Task<ApiResponse<bool>> DeleteBatch([FromBody] BatchDeleteDto dto)
     {
@@ -64,15 +68,17 @@ public class SystemOperationLogController : ControllerBase
         }
     }
 
-    /// <summary>操作日志统计概览（今日总数 / 成功 / 失败 / 平均耗时），前端页面顶部统计卡片</summary>
+    /// <summary>操作日志统计概览（今日总数 / 成功 / 失败 / 平均耗时；权限：system:log:list）</summary>
     [HttpGet("statistics")]
+    [Permission(SystemPermissions.OperationLogList)]
     public async Task<ApiResponse<OperationLogStatisticsDto>> GetStatistics()
     {
         return await _logService.GetOperationLogStatisticsAsync();
     }
 
-    /// <summary>清理过期操作日志（默认保留 90 天，返回删除条数；仅超管）</summary>
+    /// <summary>清理过期操作日志（默认保留 90 天；权限：system:log:clean，仅超管）</summary>
     [HttpPost("clean")]
+    [Permission(SystemPermissions.OperationLogClean)]
     [OperationLog("系统管理", "清理过期操作日志")]
     public async Task<ApiResponse<int>> Clean([FromBody] CleanLogDto? dto)
     {
@@ -87,8 +93,10 @@ public class SystemOperationLogController : ControllerBase
         }
     }
 
-    /// <summary>导出操作日志 Excel（.xlsx，筛选条件同分页查询）</summary>
+    /// <summary>导出操作日志 Excel（权限：system:log:export，防止审计日志被批量外带）</summary>
     [HttpGet("export")]
+    [Permission(SystemPermissions.OperationLogExport)]
+    [OperationLog("系统管理", "导出操作日志")]
     public async Task<IActionResult> Export([FromQuery] OperationLogQueryDto query)
     {
         var (content, fileName) = await _logService.ExportOperationLogsAsync(query);

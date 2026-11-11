@@ -2,6 +2,7 @@ using System.Reflection;
 using System.Text.RegularExpressions;
 using Jsd.Api.Models.Common;
 using Jsd.Api.Services;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Abstractions;
 using Microsoft.AspNetCore.Mvc.Controllers;
@@ -30,19 +31,26 @@ public class PermissionFilter : IAsyncActionFilter
     private readonly IPermissionService _permissionService;
     private readonly CurrentUserService _currentUser;
     private readonly ILogger<PermissionFilter> _logger;
+    private readonly bool _denyUnpermissionedWrites;
 
     public PermissionFilter(
         IPermissionService permissionService,
         CurrentUserService currentUser,
-        ILogger<PermissionFilter> logger)
+        ILogger<PermissionFilter> logger,
+        IConfiguration configuration)
     {
         _permissionService = permissionService;
         _currentUser = currentUser;
         _logger = logger;
+        // 写操作默认拒绝的开关（默认开启）。若某次发版漏配权限导致业务受阻，
+        // 可通过配置 Security:DenyUnpermissionedWrites=false 立即回滚，无需改代码重新发布。
+        _denyUnpermissionedWrites = configuration.GetValue("Security:DenyUnpermissionedWrites", true);
     }
 
     public async Task OnActionExecutionAsync(ActionExecutingContext context, ActionExecutionDelegate next)
     {
+        var method = context.HttpContext.Request.Method;
+
         // ============================================================
         // 【阶段六 · F-01】会员令牌与后台接口的硬隔离（在一切权限判断之前）
         //
@@ -52,15 +60,24 @@ public class PermissionFilter : IAsyncActionFilter
         //
         // 现在的策略：**会员令牌只能访问会员端白名单**，白名单之外的请求一律 403，
         // 与是否标注 [Permission] 无关。管理员令牌（IsMember=false）走原有逻辑，行为不变。
+        //
+        // 【P0-01 修复】白名单原先用「控制器前缀」放行整个控制器，而 ProdSkuController
+        //       （/api/prod/sku）、ProdInfoController（/api/prod-info）、BannerController、
+        //       CmsAnnouncementController 的写接口没有任何 [Permission]，
+        //       导致会员可直接 POST/PUT 改 SKU 价格、删商品、发公告。
+        //       现在追加「方法约束」：对「商品/横幅/公告」这类后台浏览前缀，
+        //       会员令牌只允许只读方法（GET/HEAD/OPTIONS），写方法一律 403。
         // ============================================================
         if (_currentUser.IsMember)
         {
             var path = context.HttpContext.Request.Path.Value ?? string.Empty;
-            if (!IsMemberEndpoint(path))
+            var allowed = IsMemberEndpoint(path) && IsMemberSafeMethod(path, method);
+
+            if (!allowed)
             {
                 _logger.LogWarning(
                     "越权拦截：会员 {MemberId} 尝试访问后台接口 {Method} {Path}",
-                    _currentUser.MemberId, context.HttpContext.Request.Method, path);
+                    _currentUser.MemberId, method, path);
 
                 context.Result = new JsonResult(
                     ApiResponse<object>.Fail("无权访问该功能（会员账号不可调用后台接口）",
@@ -79,12 +96,68 @@ public class PermissionFilter : IAsyncActionFilter
             return;
         }
 
-        var required = ResolveRequiredPermissions(context.ActionDescriptor);
-
-        // 未标注 [Permission] 的接口不校验权限（登录即可访问），保证存量接口零改动
-        if (required is null || required.Length == 0)
+        // ============================================================
+        // [AllowAnonymous] 的公开接口：直接放行，不参与「写操作默认拒绝」。
+        //
+        // ⚠️ 必须放在默认拒绝逻辑之前。否则登录 POST /api/auth/login、
+        //    验证码 POST /api/auth/captcha、会员登录、支付/充值回调
+        //    （都是 [AllowAnonymous] 且没有 [Permission]）会被当作
+        //    "未标权限的写接口"直接 403，表现为：
+        //    登录页提示「登录需验证码，但验证码服务不可用」、登录按钮无响应、
+        //    第三方支付回调全部失败。
+        // ============================================================
+        if (context.HttpContext.GetEndpoint()?.Metadata.GetMetadata<IAllowAnonymous>() is not null)
         {
             await next();
+            return;
+        }
+
+        var required = ResolveRequiredPermissions(context.ActionDescriptor);
+        var actionDescriptor = context.ActionDescriptor as ControllerActionDescriptor;
+
+        // 显式声明「有意不做角色权限校验」的接口直接放行（放行是一次可见的决定，而非默认结果）
+        if (IsPermissionFree(actionDescriptor))
+        {
+            await next();
+            return;
+        }
+
+        // 未标注 [Permission] 的接口
+        if (required is null || required.Length == 0)
+        {
+            // 【P0 机制修复】写操作默认拒绝：
+            //   只要没有 [Permission] / [PermissionFree]，POST/PUT/PATCH/DELETE 一律 403。
+            //   这样"新增接口忘记加权限"的默认结果变成「不可用」而不是「全平台可写」。
+            var isWrite = HttpMethods.IsPost(method) || HttpMethods.IsPut(method)
+                          || HttpMethods.IsPatch(method) || HttpMethods.IsDelete(method);
+
+            if (!isWrite || !_denyUnpermissionedWrites)
+            {
+                await next();
+                return;
+            }
+
+            // 迁移期豁免名单：这些控制器尚未逐个补 [Permission]，先放行并打告警日志。
+            // 每补完一个控制器就把它从名单里删掉；新控制器**不在名单内** → 天然默认拒绝。
+            if (actionDescriptor is not null && LegacyUnpermissionedControllers.Contains(actionDescriptor.ControllerName))
+            {
+                _logger.LogWarning(
+                    "安全告警：未标权限的写接口被调用 {Method} {Path}（控制器 {Controller} 仍在迁移豁免名单中，请尽快补 [Permission]）",
+                    method, context.HttpContext.Request.Path.Value, actionDescriptor.ControllerName);
+                await next();
+                return;
+            }
+
+            _logger.LogWarning(
+                "安全拦截：未标权限的写接口被拒绝 {Method} {Path}（控制器 {Controller}）",
+                method, context.HttpContext.Request.Path.Value,
+                actionDescriptor?.ControllerName ?? "unknown");
+
+            context.Result = new JsonResult(
+                ApiResponse<object>.Fail("该功能未配置权限标识，已按安全策略拒绝访问", StatusCodes.Status403Forbidden))
+            {
+                StatusCode = StatusCodes.Status403Forbidden
+            };
             return;
         }
 
@@ -162,6 +235,78 @@ public class PermissionFilter : IAsyncActionFilter
     /// <summary>判断某个请求路径是否属于会员端白名单</summary>
     private static bool IsMemberEndpoint(string path)
         => MemberAllowedPaths.Any(r => r.IsMatch(path));
+
+    /// <summary>
+    /// 会员白名单中「只读」的路径段：商品 / SKU / 分类 / 轮播 / 公告 / 余额概况。
+    ///
+    /// 【P0-01 修复】这些控制器与后台管理控制器共用同一个前缀，且写接口没有 [Permission]。
+    /// 若只按路径放行，会员令牌可直接 `PUT /api/prod/sku` 把价格改成 0.01 元后下单。
+    /// 因此对下列前缀追加方法约束：会员令牌只允许 GET/HEAD/OPTIONS。
+    /// </summary>
+    private static readonly Regex[] MemberReadOnlyPaths =
+    {
+        new(@"^/api/prod-info(/|$)", RegexOptions.IgnoreCase | RegexOptions.Compiled),
+        new(@"^/api/prod/(sku|category)(/|$)", RegexOptions.IgnoreCase | RegexOptions.Compiled),
+        new(@"^/api/banner(/|$)", RegexOptions.IgnoreCase | RegexOptions.Compiled),
+        new(@"^/api/cms(/|$)", RegexOptions.IgnoreCase | RegexOptions.Compiled),
+        new(@"^/api/balance/\d+$", RegexOptions.IgnoreCase | RegexOptions.Compiled)
+    };
+
+    /// <summary>会员令牌访问该路径时，方法是否安全（只读路径只允许安全方法）</summary>
+    private static bool IsMemberSafeMethod(string path, string method)
+    {
+        var isSafeMethod = HttpMethods.IsGet(method) || HttpMethods.IsHead(method) || HttpMethods.IsOptions(method);
+        if (isSafeMethod)
+        {
+            return true;
+        }
+
+        // 命中了只读路径却使用写方法 → 判定为越权（典型场景：会员改价、删商品、发公告）
+        return !MemberReadOnlyPaths.Any(r => r.IsMatch(path));
+    }
+
+    /// <summary>
+    /// 迁移期豁免名单：这些控制器的写接口尚未补齐 [Permission]，暂时放行但会打安全告警。
+    ///
+    /// 迁移规则：
+    ///   1) 每给一个控制器补完 [Permission]，就把它从本名单删除；
+    ///   2) **新写的控制器不要加进来** —— 不在名单内即默认拒绝（403），这是本机制的意义所在；
+    ///   3) 名单清空后，本机制即为完全的「写操作默认拒绝」。
+    /// </summary>
+    private static readonly HashSet<string> LegacyUnpermissionedControllers = new(StringComparer.OrdinalIgnoreCase)
+    {
+        // TODO 待补权限（建议下一批处理，按风险从高到低）
+        "SysRole",              // P0：可自我提权
+        "SysUser",              // P0：可重置超管密码（Create 已补，其余待补）
+        "SysConfig",
+        "TaskJob",
+        "Customer",             // 可重置任意会员密码
+        "ProdInfo",
+        "ProdSku",
+        "ProdSpecItem",
+        "ProdSpecValue",
+        "SupSupplier",
+        "Banner",
+        "CmsAnnouncement",
+        "DictType",
+        "DictData",
+        "File",
+        "AdminUpload",
+        "PaymentLog",
+        "AfterSaleLog"
+    };
+
+    /// <summary>接口是否显式声明「有意不做角色权限校验」</summary>
+    private static bool IsPermissionFree(ControllerActionDescriptor? descriptor)
+    {
+        if (descriptor is null)
+        {
+            return false;
+        }
+
+        return descriptor.MethodInfo.GetCustomAttribute<PermissionFreeAttribute>(inherit: false) is not null
+               || descriptor.ControllerTypeInfo.GetCustomAttribute<PermissionFreeAttribute>(inherit: true) is not null;
+    }
 
     /// <summary>
     /// 解析当前接口所需的权限标识：优先 Action 方法级，回退 Controller 类级。

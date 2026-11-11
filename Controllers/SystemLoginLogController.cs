@@ -28,30 +28,34 @@ public class SystemLoginLogController : ControllerBase
         _securityService = securityService;
     }
 
-    /// <summary>登录日志分页查询（用户名/IP/登录方式/状态/时间范围，create_time 倒序）</summary>
+    /// <summary>登录日志分页查询（用户名/IP/登录方式/状态/时间范围；权限：system:log:list）</summary>
     [HttpGet("list")]
+    [Permission(SystemPermissions.LoginLogList)]
     public async Task<ApiResponse<PagedResult<LoginLogDto>>> GetList([FromQuery] LoginLogQueryDto query)
     {
         return await _logService.GetLoginLogsAsync(query);
     }
 
-    /// <summary>登录日志详情</summary>
+    /// <summary>登录日志详情（权限：system:log:list）</summary>
     [HttpGet("{id:long}")]
+    [Permission(SystemPermissions.LoginLogList)]
     public async Task<ApiResponse<LoginLogDto>> GetDetail(long id)
     {
         return await _logService.GetLoginLogDetailAsync(id);
     }
 
-    /// <summary>删除单条登录日志（仅超管）</summary>
+    /// <summary>删除单条登录日志（权限：system:log:remove，仅超管）</summary>
     [HttpDelete("{id:long}")]
+    [Permission(SystemPermissions.LoginLogRemove)]
     [OperationLog("系统管理", "删除登录日志")]
     public async Task<ApiResponse<bool>> Delete(long id)
     {
         return await _logService.DeleteLoginLogAsync(id);
     }
 
-    /// <summary>批量删除登录日志（仅超管）</summary>
+    /// <summary>批量删除登录日志（权限：system:log:remove，仅超管）</summary>
     [HttpDelete("batch")]
+    [Permission(SystemPermissions.LoginLogRemove)]
     [OperationLog("系统管理", "批量删除登录日志")]
     public async Task<ApiResponse<bool>> DeleteBatch([FromBody] BatchDeleteDto dto)
     {
@@ -66,8 +70,9 @@ public class SystemLoginLogController : ControllerBase
         }
     }
 
-    /// <summary>清理过期登录日志（默认保留 180 天，返回删除条数；仅超管）</summary>
+    /// <summary>清理过期登录日志（权限：system:log:clean，仅超管）</summary>
     [HttpPost("clean")]
+    [Permission(SystemPermissions.LoginLogClean)]
     [OperationLog("系统管理", "清理过期登录日志")]
     public async Task<ApiResponse<int>> Clean([FromBody] CleanLogDto? dto)
     {
@@ -82,8 +87,10 @@ public class SystemLoginLogController : ControllerBase
         }
     }
 
-    /// <summary>导出登录日志 Excel（.xlsx，筛选条件同分页查询）</summary>
+    /// <summary>导出登录日志 Excel（权限：system:log:export，防止审计日志被批量外带）</summary>
     [HttpGet("export")]
+    [Permission(SystemPermissions.LoginLogExport)]
+    [OperationLog("系统管理", "导出登录日志")]
     public async Task<IActionResult> Export([FromQuery] LoginLogQueryDto query)
     {
         var (content, fileName) = await _logService.ExportLoginLogsAsync(query);
@@ -92,22 +99,28 @@ public class SystemLoginLogController : ControllerBase
             fileName);
     }
 
-    /// <summary>登录日志统计概览（今日总数 / 成功 / 失败 / 当前锁定账号数），前端页面顶部统计卡片</summary>
+    /// <summary>登录日志统计概览（权限：system:log:list）</summary>
     [HttpGet("statistics")]
+    [Permission(SystemPermissions.LoginLogList)]
     public async Task<ApiResponse<LoginLogStatisticsDto>> GetStatistics()
     {
         return await _logService.GetLoginLogStatisticsAsync();
     }
 
-    /// <summary>已锁定账号列表（当前仍处于锁定状态的账号，未解锁的）</summary>
+    /// <summary>已锁定账号列表（权限：system:lock:list）</summary>
     [HttpGet("lock/list")]
+    [Permission(SystemPermissions.LockList)]
     public async Task<ApiResponse<PagedResult<LockAccountDto>>> GetLockList([FromQuery] LockAccountQueryDto query)
     {
         return await _logService.GetLockedAccountsAsync(query);
     }
 
-    /// <summary>手动解锁账号（重置失败计数与锁定时间，写操作日志；仅超管）</summary>
+    /// <summary>
+    /// 手动解锁账号（重置失败计数与锁定时间；权限：system:account:unlock，仅超管）。
+    /// 【安全说明】本接口可绕过登录失败锁定策略，若无权限控制，攻击者可配合撞库无限重置锁定。
+    /// </summary>
     [HttpPost("unlock/{memberId:long}")]
+    [Permission(SystemPermissions.AccountUnlock)]
     [OperationLog("系统管理", "手动解锁账号")]
     public async Task<ApiResponse<bool>> Unlock(long memberId)
     {

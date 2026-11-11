@@ -8,6 +8,7 @@ using Jsd.Api.Jobs;
 using Jsd.Api.Services;
 using Jsd.Api.Validators;
 using Quartz;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
@@ -354,7 +355,23 @@ builder.Services
                 Encoding.UTF8.GetBytes(jwtSection["SecretKey"]!))
         };
     });
-builder.Services.AddAuthorization();
+// ============================================================
+// 【安全加固】全局兜底认证策略（FallbackPolicy）
+//
+// 作用：给**所有未显式声明授权元数据的端点**自动套上「必须已登录」。
+//   1) 今后新增控制器即使忘记写 [Authorize]，也不会变成匿名接口；
+//   2) 需要公开的接口必须显式标 [AllowAnonymous]（登录、验证码、商品浏览、已验签的支付回调）；
+//   3) 与 PermissionFilter 的「写操作默认拒绝」组合，形成
+//      「认证默认要求 + 授权默认拒绝」的双层默认安全。
+//
+// 说明：FallbackPolicy 不会覆盖 [AllowAnonymous]，也不会影响已有的 [Authorize]。
+// ============================================================
+builder.Services.AddAuthorization(options =>
+{
+    options.FallbackPolicy = new AuthorizationPolicyBuilder()
+        .RequireAuthenticatedUser()
+        .Build();
+});
 
 // ============================================================
 // 6. 跨域 CORS（开发期允许前端任意地址访问）

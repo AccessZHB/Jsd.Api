@@ -29,9 +29,10 @@ public class LogisticsController : ControllerBase
         _logisticsService = logisticsService;
     }
 
-    /// <summary>智能识别快递公司（传入单号自动识别）</summary>
+    /// <summary>智能识别快递公司（传入单号自动识别；权限：order:logistics:query）</summary>
     /// <remarks>GET /api/logistics/identify?trackingNumber=xxx</remarks>
     [HttpGet("identify")]
+    [Permission(LogisticsPermissions.Query)]   // 未授权角色 403，防止白嫖快递100 付费配额
     public async Task<ApiResponse<LogisticsIdentifyResult>> Identify([FromQuery] string trackingNumber)
     {
         if (string.IsNullOrWhiteSpace(trackingNumber))
@@ -73,9 +74,10 @@ public class LogisticsController : ControllerBase
         }
     }
 
-    /// <summary>获取地图轨迹链接（可选能力）</summary>
+    /// <summary>获取地图轨迹链接（可选能力；权限：order:logistics:query）</summary>
     /// <remarks>GET /api/logistics/track/map?trackingNumber=xxx</remarks>
     [HttpGet("track/map")]
+    [Permission(LogisticsPermissions.Query)]   // 未授权角色 403，防止白嫖第三方付费配额
     public async Task<ApiResponse<LogisticsMapResult>> GetMap([FromQuery] string trackingNumber)
     {
         if (string.IsNullOrWhiteSpace(trackingNumber))

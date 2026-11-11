@@ -27,19 +27,38 @@ public class SystemSecurityController : ControllerBase
     }
 
     /// <summary>
-    /// 获取登录安全策略配置（失败锁定阈值/时长、密码强度、验证码开关）。
-    /// 登录页在未登录状态就需要读取验证码开关，故本接口单独放行匿名访问（不返回任何账号数据）。
+    /// 获取完整登录安全策略配置（失败锁定阈值/时长、密码强度、验证码开关、Token 有效期等）。
+    /// 【P0-13 修复】原先整接口 [AllowAnonymous]，等于把「锁定前可试几次 / 验证码是否开启 /
+    /// 密码复杂度下限」这些撞库所需情报直接公开。现改为必须登录 + 权限校验。
+    /// 登录页只需要"是否开启验证码 + 验证码长度"，请改调 /api/system/security/captcha-policy。
     /// </summary>
     [HttpGet("config")]
-    [AllowAnonymous]
+    [Permission(SystemPermissions.SecurityList)]
     public async Task<ApiResponse<SecurityConfigDto>> GetConfig()
     {
         var config = await _securityService.GetConfigAsync();
         return ApiResponse<SecurityConfigDto>.Success(config);
     }
 
-    /// <summary>修改登录安全策略配置（仅超管；写入 sys_config）</summary>
+    /// <summary>
+    /// 登录页专用：仅披露验证码开关与长度（最小必要信息）。
+    /// 保持匿名（登录页未登录就要判断是否展示验证码），但**不返回锁定阈值、密码策略、Token 时长**。
+    /// </summary>
+    [HttpGet("captcha-policy")]
+    [AllowAnonymous]
+    public async Task<ApiResponse<object>> GetCaptchaPolicy()
+    {
+        var config = await _securityService.GetConfigAsync();
+        return ApiResponse<object>.Success(new
+        {
+            captchaEnabled = config.CaptchaEnabled,
+            captchaLength = config.CaptchaLength
+        });
+    }
+
+    /// <summary>修改登录安全策略配置（权限：system:security:update，仅超管；写 sys_config）</summary>
     [HttpPut("config")]
+    [Permission(SystemPermissions.SecurityUpdate)]
     [OperationLog("系统管理", "修改登录安全策略")]
     public async Task<ApiResponse<bool>> UpdateConfig([FromBody] SecurityConfigDto dto)
     {
