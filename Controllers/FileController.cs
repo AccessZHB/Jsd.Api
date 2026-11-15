@@ -1,5 +1,7 @@
+using Jsd.Api.Attributes;
 using Jsd.Api.Helpers;
 using Jsd.Api.Models.Common;
+using Jsd.Api.Models.File;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
@@ -30,6 +32,7 @@ public class FileController : ControllerBase
     /// </summary>
     [HttpPost("upload")]
     [HttpPost("upload/image")]
+    [Permission(FilePermissions.Upload)]    // file:upload
     public Task<ApiResponse<object>> Upload(IFormFile? file)
     {
         return ImageSaver.SaveAsync(_env, file);

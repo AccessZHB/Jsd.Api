@@ -27,6 +27,7 @@ public class SysRoleController : ControllerBase
     /// 示例：GET /api/sys/role/list
     /// </summary>
     [HttpGet("list")]
+    [Permission(SysRolePermissions.List)]           // system:role:list
     public async Task<ApiResponse<List<SysRoleDto>>> GetList()
     {
         return await _roleService.GetListAsync();
@@ -37,6 +38,7 @@ public class SysRoleController : ControllerBase
     /// 示例：GET /api/sys/role/2
     /// </summary>
     [HttpGet("{id}")]
+    [Permission(SysRolePermissions.Query)]          // system:role:query
     public async Task<ApiResponse<SysRoleDto>> GetById(long id)
     {
         return await _roleService.GetByIdAsync(id);
@@ -48,6 +50,7 @@ public class SysRoleController : ControllerBase
     /// 示例：POST /api/sys/role
     /// </summary>
     [HttpPost]
+    [Permission(SysRolePermissions.Add)]            // system:role:add
     [OperationLog("系统管理", "新增角色")]
     public async Task<ApiResponse<object>> Create([FromBody] SysRoleCreateDto dto)
     {
@@ -60,6 +63,8 @@ public class SysRoleController : ControllerBase
     /// 请求体：{ "id": 2, "roleName": "运营专员", "roleCode": "operation", "dataScope": 1, "status": 1 }
     /// </summary>
     [HttpPut]
+    [Permission(SysRolePermissions.Edit)]           // system:role:edit
+    [OperationLog("系统管理", "修改角色")]
     public async Task<ApiResponse<object>> Update([FromBody] SysRoleUpdateDto dto)
     {
         // [ApiController] + DTO 上的 [Required]/[Range] 特性自动做参数校验，不通过直接返回 400
@@ -71,6 +76,8 @@ public class SysRoleController : ControllerBase
     /// 示例：DELETE /api/sys/role/4
     /// </summary>
     [HttpDelete("{id}")]
+    [Permission(SysRolePermissions.Remove)]         // system:role:remove
+    [OperationLog("系统管理", "删除角色")]
     public async Task<ApiResponse<object>> Delete(long id)
     {
         return await _roleService.DeleteAsync(id);
@@ -81,6 +88,8 @@ public class SysRoleController : ControllerBase
     /// 示例：DELETE /api/sys/role/batch?ids=3,4
     /// </summary>
     [HttpDelete("batch")]
+    [Permission(SysRolePermissions.Remove)]         // 批量删除复用 remove
+    [OperationLog("系统管理", "批量删除角色")]
     public async Task<ApiResponse<object>> DeleteBatch([FromQuery] string ids)
     {
         var idList = ParseIds(ids);
@@ -97,6 +106,8 @@ public class SysRoleController : ControllerBase
     /// 说明：menuIds 传最终勾选结果（含目录/菜单/按钮的 Id）；传空数组 = 清空该角色全部权限
     /// </summary>
     [HttpPut("auth")]
+    [Permission(SysRolePermissions.Grant)]          // system:role:grant —— 自我提权入口，仅超管/系统管理员
+    [OperationLog("系统管理", "分配角色菜单权限")]
     public async Task<ApiResponse<object>> AssignMenus([FromBody] SysRoleAuthDto dto)
     {
         return await _roleService.AssignMenusAsync(dto);
@@ -108,6 +119,7 @@ public class SysRoleController : ControllerBase
     /// 返回：{ "code": 200, "data": [1, 100, 101, 102] }
     /// </summary>
     [HttpGet("{id}/menus")]
+    [Permission(SysRolePermissions.Query)]          // 回显属于查询
     public async Task<ApiResponse<List<long>>> GetRoleMenuIds(long id)
     {
         return await _roleService.GetRoleMenuIdsAsync(id);

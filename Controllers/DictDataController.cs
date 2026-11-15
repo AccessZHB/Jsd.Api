@@ -32,17 +32,23 @@ public class DictDataController : ControllerBase
     /// GET /api/dict/data/list?dictTypeId=&amp;dictTypeCode=&amp;dictLabel=&amp;status=0&amp;page=1&amp;pageSize=10
     /// </remarks>
     [HttpGet("list")]
+    [Permission(DictPermissions.DataList)]     // dict:data:list
     public async Task<ApiResponse<PagedResult<DictDataDto>>> GetList([FromQuery] DictDataQueryDto query)
         => await _dictDataService.GetPagedAsync(query);
 
     /// <summary>字典数据详情</summary>
     /// <remarks>GET /api/dict/data/1</remarks>
     [HttpGet("{id:long}")]
+    [Permission(DictPermissions.DataList)]     // 详情复用 list
     public async Task<ApiResponse<DictDataDto?>> GetById(long id)
         => await _dictDataService.GetByIdAsync(id);
 
     /// <summary>按字典类型编码获取所有启用数据（核心缓存接口）</summary>
-    /// <remarks>GET /api/dict/data/type/sys_order_status</remarks>
+    /// <remarks>
+    /// GET /api/dict/data/type/sys_order_status
+    /// 不挂权限：全站下拉框（订单状态/支付方式/售后原因…）都依赖它，
+    /// 挂权限会导致无字典权限的角色页面下拉框全空。
+    /// </remarks>
     [HttpGet("type/{dictType}")]
     public async Task<ApiResponse<List<DictDataItem>>> GetByDictType(string dictType)
         => await _dictDataService.GetByDictTypeAsync(dictType);
@@ -50,6 +56,7 @@ public class DictDataController : ControllerBase
     /// <summary>新增字典数据</summary>
     /// <remarks>POST /api/dict/data</remarks>
     [HttpPost]
+    [Permission(DictPermissions.DataCreate)]   // dict:data:create
     [OperationLog("字典管理", "新增字典数据")]
     public async Task<ApiResponse<long>> Create([FromBody] CreateDictDataDto dto)
     {
@@ -66,6 +73,7 @@ public class DictDataController : ControllerBase
     /// <summary>修改字典数据</summary>
     /// <remarks>PUT /api/dict/data</remarks>
     [HttpPut]
+    [Permission(DictPermissions.DataUpdate)]   // dict:data:update
     [OperationLog("字典管理", "修改字典数据")]
     public async Task<ApiResponse<bool>> Update([FromBody] UpdateDictDataDto dto)
     {
@@ -82,6 +90,7 @@ public class DictDataController : ControllerBase
     /// <summary>启用/停用字典数据</summary>
     /// <remarks>PUT /api/dict/data/{id}/status   body: { "status": 0 }</remarks>
     [HttpPut("{id:long}/status")]
+    [Permission(DictPermissions.DataUpdate)]   // 启停复用 update
     [OperationLog("字典管理", "启用停用字典数据")]
     public async Task<ApiResponse<bool>> ChangeStatus(long id, [FromBody] DictStatusDto dto)
         => await _dictDataService.ChangeStatusAsync(id, dto);
@@ -89,6 +98,7 @@ public class DictDataController : ControllerBase
     /// <summary>删除字典数据</summary>
     /// <remarks>DELETE /api/dict/data/1</remarks>
     [HttpDelete("{id:long}")]
+    [Permission(DictPermissions.DataDelete)]   // dict:data:delete
     [OperationLog("字典管理", "删除字典数据")]
     public async Task<ApiResponse<bool>> Delete(long id)
         => await _dictDataService.DeleteAsync(id);

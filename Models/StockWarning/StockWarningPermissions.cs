@@ -16,5 +16,5 @@ public static class StockWarningPermissions
     public const string Edit = "stock_warning:edit";
 
     /// <summary>启用 / 停用切换</summary>
-    public const string Enable = "stock_warning:enable";
+    public const string Enable = "stock_warning:toggle";
 }

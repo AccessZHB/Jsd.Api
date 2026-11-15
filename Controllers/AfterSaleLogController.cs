@@ -1,3 +1,4 @@
+using Jsd.Api.Attributes;
 using Jsd.Api.Models.AfterSale;
 using Jsd.Api.Models.Common;
 using Jsd.Api.Services;
@@ -25,6 +26,7 @@ public class AfterSaleLogController : ControllerBase
 
     /// <summary>查询某退款单的全链路操作日志</summary>
     [HttpGet("by-refund/{refundId:long}")]
+    [Permission(AfterSalePermissions.RefundList)]   // aftersale:refund:list
     public async Task<ApiResponse<List<RefundLogDto>>> GetByRefund(long refundId)
     {
         return await _logService.GetByRefundAsync(refundId);
@@ -32,6 +34,7 @@ public class AfterSaleLogController : ControllerBase
 
     /// <summary>查询某退货单的操作日志</summary>
     [HttpGet("by-return/{returnId:long}")]
+    [Permission(AfterSalePermissions.ReturnList)]   // aftersale:return:list
     public async Task<ApiResponse<List<RefundLogDto>>> GetByReturn(long returnId)
     {
         return await _logService.GetByReturnAsync(returnId);

@@ -32,18 +32,21 @@ public class SysConfigController : ControllerBase
     /// <summary>配置列表（分页 + 条件搜索）</summary>
     /// <remarks>GET /api/system/config/list?configName=&amp;configKey=&amp;configType=&amp;status=0&amp;page=1&amp;pageSize=10</remarks>
     [HttpGet("list")]
+    [Permission(SysConfigPermissions.List)]         // system:config:list
     public async Task<ApiResponse<PagedResult<SysConfigDto>>> GetList([FromQuery] SysConfigQueryDto query)
         => await _configService.GetPagedListAsync(query);
 
     /// <summary>配置详情</summary>
     /// <remarks>GET /api/system/config/1</remarks>
     [HttpGet("{id:long}")]
+    [Permission(SysConfigPermissions.List)]         // 详情复用 list
     public async Task<ApiResponse<SysConfigDetailDto?>> GetById(long id)
         => await _configService.GetByIdAsync(id);
 
     /// <summary>新增配置（校验 config_key 唯一）</summary>
     /// <remarks>POST /api/system/config</remarks>
     [HttpPost]
+    [Permission(SysConfigPermissions.Create)]       // system:config:create
     [OperationLog("系统管理", "新增系统配置")]
     public async Task<ApiResponse<long>> Create([FromBody] CreateSysConfigDto dto)
     {
@@ -60,6 +63,7 @@ public class SysConfigController : ControllerBase
     /// <summary>修改配置（系统内置仅允许改配置值）</summary>
     /// <remarks>PUT /api/system/config</remarks>
     [HttpPut]
+    [Permission(SysConfigPermissions.Update)]       // system:config:update
     [OperationLog("系统管理", "修改系统配置")]
     public async Task<ApiResponse<bool>> Update([FromBody] UpdateSysConfigDto dto)
     {
@@ -76,6 +80,7 @@ public class SysConfigController : ControllerBase
     /// <summary>批量删除配置（逗号分隔；系统内置 config_type='Y' 不可删除）</summary>
     /// <remarks>DELETE /api/system/config/1,2,3</remarks>
     [HttpDelete("{ids}")]
+    [Permission(SysConfigPermissions.Delete)]       // system:config:delete
     [OperationLog("系统管理", "删除系统配置")]
     public async Task<ApiResponse<int>> Delete(string ids)
     {
@@ -89,7 +94,12 @@ public class SysConfigController : ControllerBase
     }
 
     /// <summary>按 key 获取配置值（优先读缓存）</summary>
-    /// <remarks>GET /api/system/config/value/security.login</remarks>
+    /// <remarks>
+    /// GET /api/system/config/value/security.login
+    /// 说明：本接口被登录页/公共布局等非管理页面复用（站名、Logo、开关等），
+    ///      因此只要求登录、不挂 system:config:list，避免普通后台账号页面白屏。
+    ///      敏感配置（如 security.login）不通过本接口暴露，见 SystemSecurityController。
+    /// </remarks>
     [HttpGet("value/{configKey}")]
     public async Task<ApiResponse<ConfigValueDto>> GetValue(string configKey)
         => await _configService.GetValueAsync(configKey);
@@ -97,6 +107,7 @@ public class SysConfigController : ControllerBase
     /// <summary>按 key 列表批量获取配置值（一次回源，不循环打库）</summary>
     /// <remarks>POST /api/system/config/values  body: { "keys": ["sys.app.name", "security.login"] }</remarks>
     [HttpPost("values")]
+    [PermissionFree("批量读取配置值：语义为只读（一次回源），被公共组件复用，故不纳入写操作默认拒绝")]
     public async Task<ApiResponse<List<ConfigValueDto>>> GetValues([FromBody] ConfigKeysDto dto)
     {
         try
@@ -113,6 +124,7 @@ public class SysConfigController : ControllerBase
     /// <summary>刷新配置缓存（清空全部并重新从数据库装载）</summary>
     /// <remarks>POST /api/system/config/cache/refresh</remarks>
     [HttpPost("cache/refresh")]
+    [Permission(SysConfigPermissions.Cache)]        // system:config:cache
     [OperationLog("系统管理", "刷新配置缓存")]
     public async Task<ApiResponse<ConfigCacheResultDto>> RefreshCache()
         => await _configService.RefreshCacheAsync();
@@ -120,6 +132,7 @@ public class SysConfigController : ControllerBase
     /// <summary>清空配置缓存</summary>
     /// <remarks>POST /api/system/config/cache/clear</remarks>
     [HttpPost("cache/clear")]
+    [Permission(SysConfigPermissions.Cache)]        // system:config:cache
     [OperationLog("系统管理", "清空配置缓存")]
     public async Task<ApiResponse<ConfigCacheResultDto>> ClearCache()
         => await _configService.ClearCacheAsync();

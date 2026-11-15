@@ -1,3 +1,4 @@
+using Jsd.Api.Attributes;
 using Jsd.Api.Models.Common;
 using Jsd.Api.Models.Customer;
 using Jsd.Api.Services;
@@ -26,6 +27,7 @@ public class CustomerController : ControllerBase
     /// 示例：GET /api/customer/page?page=1&pageSize=10&keyword=张&level=1&status=1
     /// </summary>
     [HttpGet("page")]
+    [Permission(CustomerPermissions.List)]          // customer:list
     public async Task<ApiResponse<PagedResult<CustomerListItemDto>>> GetPage([FromQuery] CustomerPageQuery query)
     {
         return await _memberService.GetPagedListAsync(query);
@@ -36,6 +38,7 @@ public class CustomerController : ControllerBase
     /// 示例：GET /api/customer/1
     /// </summary>
     [HttpGet("{id}")]
+    [Permission(CustomerPermissions.Query)]         // customer:query
     public async Task<ApiResponse<CustomerDetailDto>> GetDetail(long id)
     {
         return await _memberService.GetDetailAsync(id);
@@ -46,6 +49,7 @@ public class CustomerController : ControllerBase
     /// 示例：GET /api/customer/1/orders?page=1&pageSize=10
     /// </summary>
     [HttpGet("{id}/orders")]
+    [Permission(CustomerPermissions.Query)]         // 订单历史属于客户查询
     public async Task<ApiResponse<PagedResult<CustomerOrderItemDto>>> GetOrders(
         long id, [FromQuery] int page = 1, [FromQuery] int pageSize = 10)
     {
@@ -57,6 +61,8 @@ public class CustomerController : ControllerBase
     /// 请求体：{ "name":"张三","userName":"zhangsan","password":"123456", ... }
     /// </summary>
     [HttpPost]
+    [Permission(CustomerPermissions.Add)]           // customer:add
+    [OperationLog("客户管理", "新增客户")]
     public async Task<ApiResponse<object>> Create([FromBody] CustomerSaveDto dto)
     {
         // [ApiController] + DTO 特性自动做非空/格式校验，不通过直接返回 400
@@ -68,6 +74,8 @@ public class CustomerController : ControllerBase
     /// 请求体：{ "id":1, "name":"张三","userName":"zhangsan", "password":"" , ...}
     /// </summary>
     [HttpPut("{id}")]
+    [Permission(CustomerPermissions.Edit)]          // customer:edit
+    [OperationLog("客户管理", "编辑客户")]
     public async Task<ApiResponse<object>> Update(long id, [FromBody] CustomerSaveDto dto)
     {
         // 路由 id 与 主体 id 不一致时以路由为准，避免误改他人
@@ -83,6 +91,8 @@ public class CustomerController : ControllerBase
     /// 示例：DELETE /api/customer/1
     /// </summary>
     [HttpDelete("{id}")]
+    [Permission(CustomerPermissions.Del)]           // customer:del（历史命名，保持一致）
+    [OperationLog("客户管理", "删除客户")]
     public async Task<ApiResponse<object>> Delete(long id)
     {
         return await _memberService.DeleteAsync(id);
@@ -96,6 +106,8 @@ public class CustomerController : ControllerBase
     /// </summary>
     [HttpPost("{id}/reset-password")]
     [Authorize]
+    [Permission(CustomerPermissions.Reset)]         // customer:reset —— 高危：重置任意会员密码
+    [OperationLog("客户管理", "重置客户密码")]
     public async Task<ApiResponse<object>> ResetPassword(long id, [FromBody] CustomerResetPasswordDto dto)
     {
         // 安全限制：拒绝小程序会员令牌（管理员令牌不带 user_type 声明）
@@ -116,6 +128,7 @@ public class CustomerController : ControllerBase
     /// </summary>
     [HttpPost("reset-password")]
     [Authorize]
+    [PermissionFree("小程序会员本人重置密码：身份取自 JWT member_id，方法内已拒绝管理员令牌")]
     public async Task<ApiResponse<object>> SelfResetPassword([FromBody] SelfResetPasswordDto dto)
     {
         // 仅小程序会员可调用：必须有 user_type=member 声明，并能解析出 member_id

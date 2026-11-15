@@ -1,5 +1,7 @@
+using Jsd.Api.Attributes;
 using Jsd.Api.Models.Common;
 using Jsd.Api.Models.Finance;
+using Jsd.Api.Models.Order;
 using Jsd.Api.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -37,6 +39,7 @@ public class PaymentLogController : ControllerBase
     /// 排序：按【回调时间倒序】，最新的一次排在最上面。
     /// </summary>
     [HttpGet("by-order/{orderId}")]
+    [Permission(OrderPermissions.List)]     // order:list（支付记录属订单详情的一部分）
     public async Task<ApiResponse<List<OrderPaymentLogDto>>> GetByOrder(long orderId)
     {
         if (orderId <= 0)

@@ -10,11 +10,11 @@ namespace Jsd.Api.Models.StockQuery;
 public static class StockQueryPermissions
 {
     /// <summary>库存总览（统计看板）</summary>
-    public const string Overview = "stock_query:overview";
+    public const string Overview = "stock:overview";
 
     /// <summary>库存明细（SKU 库存列表）</summary>
-    public const string Detail = "stock_query:detail";
+    public const string Detail = "stock:detail";
 
     /// <summary>变动日志</summary>
-    public const string Log = "stock_query:log";
+    public const string Log = "stock:log";
 }

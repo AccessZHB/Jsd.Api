@@ -1,3 +1,4 @@
+using Jsd.Api.Attributes;
 using Jsd.Api.Models.Common;
 using Jsd.Api.Models.Product;
 using Jsd.Api.Services;
@@ -40,6 +41,7 @@ public class ProdCategoryController : ControllerBase
     /// <param name="page">页码，默认1</param>
     /// <param name="pageSize">每页条数，默认10</param>
     [HttpGet("list")]
+    [Permission(ProdCategoryPermissions.List)]   // prod:category:list
     public async Task<ApiResponse<PagedResult<CategoryDto>>> GetList(
         [FromQuery] string? keyword,
         [FromQuery] int page = 1,
@@ -53,6 +55,7 @@ public class ProdCategoryController : ControllerBase
     /// 示例：GET /api/prod/category/3
     /// </summary>
     [HttpGet("{id}")]
+    [Permission(ProdCategoryPermissions.List)]   // 详情复用 list
     public async Task<ApiResponse<CategoryDto>> GetById(long id)
     {
         return await _categoryService.GetByIdAsync(id);
@@ -63,6 +66,8 @@ public class ProdCategoryController : ControllerBase
     /// 请求体：{ "categoryName": "太阳镜", "parentId": 1, "sort": 1 }
     /// </summary>
     [HttpPost]
+    [Permission(ProdCategoryPermissions.Add)]    // prod:category:add
+    [OperationLog("商品管理", "新增商品分类")]
     public async Task<ApiResponse<object>> Create([FromBody] CategoryCreateDto dto)
     {
         // [ApiController] + DTO 特性自动做非空校验，不通过直接返回 400
@@ -74,6 +79,8 @@ public class ProdCategoryController : ControllerBase
     /// 请求体：{ "id": 3, "categoryName": "太阳镜", "parentId": 1, "sort": 2, "status": 1 }
     /// </summary>
     [HttpPut]
+    [Permission(ProdCategoryPermissions.Edit)]   // prod:category:edit
+    [OperationLog("商品管理", "修改商品分类")]
     public async Task<ApiResponse<object>> Update([FromBody] CategoryUpdateDto dto)
     {
         return await _categoryService.UpdateAsync(dto);
@@ -84,6 +91,8 @@ public class ProdCategoryController : ControllerBase
     /// 示例：DELETE /api/prod/category/3
     /// </summary>
     [HttpDelete("{id}")]
+    [Permission(ProdCategoryPermissions.Remove)] // prod:category:remove
+    [OperationLog("商品管理", "删除商品分类")]
     public async Task<ApiResponse<object>> Delete(long id)
     {
         return await _categoryService.DeleteAsync(id);

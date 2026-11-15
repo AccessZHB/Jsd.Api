@@ -30,6 +30,7 @@ public class SysUserController : ControllerBase
     /// <param name="page">页码，默认1</param>
     /// <param name="pageSize">每页条数，默认10</param>
     [HttpGet("list")]
+    [Permission(SysUserPermissions.List)]   // system:user:list
     public async Task<ApiResponse<PagedResult<SysUserListDto>>> GetList(
         [FromQuery] string? keyword,
         [FromQuery] int page = 1,
@@ -43,6 +44,7 @@ public class SysUserController : ControllerBase
     /// 示例：GET /api/sys/user/1
     /// </summary>
     [HttpGet("{id}")]
+    [Permission(SysUserPermissions.Query)]  // system:user:query
     public async Task<ApiResponse<SysUserListDto>> GetById(long id)
     {
         return await _userService.GetByIdAsync(id);
@@ -64,6 +66,8 @@ public class SysUserController : ControllerBase
     /// 请求体：{ "id": 2, "userName": "zhangsan", "realName": "张三", "roleId": 3, "status": 1 }
     /// </summary>
     [HttpPut("{id}")]
+    [Permission(SysUserPermissions.Edit)]   // system:user:edit
+    [OperationLog("系统管理", "修改用户")]
     public async Task<ApiResponse<object>> Update(int id, [FromBody] SysUserUpdateDto dto)
     {
         dto.Id = id;
@@ -77,6 +81,8 @@ public class SysUserController : ControllerBase
     /// 示例：DELETE /api/sys/user/2
     /// </summary>
     [HttpDelete("{id}")]
+    [Permission(SysUserPermissions.Remove)] // system:user:remove
+    [OperationLog("系统管理", "删除用户")]
     public async Task<ApiResponse<object>> Delete(long id)
     {
         return await _userService.DeleteAsync(id);
@@ -92,6 +98,7 @@ public class SysUserController : ControllerBase
     ///   - 非超级管理员须拥有 system:user:edit 权限。
     /// </summary>
     [HttpPut("{id}/password")]
+    [Permission(SysUserPermissions.Edit)]   // 重置密码复用 edit（设计约定），Service 内另有超管护栏
     [OperationLog("系统管理", "重置用户密码")]
     public async Task<ApiResponse<object>> ResetPassword(long id, [FromBody] ResetPasswordDto dto)
     {
@@ -103,6 +110,8 @@ public class SysUserController : ControllerBase
     /// 示例：DELETE /api/sys/user/batch?ids=2,3,4
     /// </summary>
     [HttpDelete("batch")]
+    [Permission(SysUserPermissions.Remove)] // 批量删除复用 remove
+    [OperationLog("系统管理", "批量删除用户")]
     public async Task<ApiResponse<object>> DeleteBatch([FromQuery] string ids)
     {
         var idList = ParseIds(ids);

@@ -1,3 +1,4 @@
+using Jsd.Api.Attributes;
 using Jsd.Api.Entities;
 using Jsd.Api.Models.Cms;
 using Jsd.Api.Models.Common;
@@ -78,6 +79,7 @@ public class CmsAnnouncementController : ControllerBase
     /// </summary>
     [HttpGet("list")]
     [Authorize]
+    [Permission(CmsPermissions.AnnouncementList)]   // announcement:list
     [ProducesResponseType(typeof(ApiResponse<PagedResult<AnnouncementListDto>>), StatusCodes.Status200OK)]
     public async Task<ApiResponse<PagedResult<AnnouncementListDto>>> GetList([FromQuery] int page = 1, [FromQuery] int pageSize = 10)
     {
@@ -124,6 +126,8 @@ public class CmsAnnouncementController : ControllerBase
     /// </summary>
     [HttpPost("add")]
     [Authorize]
+    [Permission(CmsPermissions.AnnouncementAdd)]    // announcement:add
+    [OperationLog("内容管理", "发布公告")]
     [ProducesResponseType(typeof(ApiResponse<long>), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ApiResponse<long>), StatusCodes.Status400BadRequest)]
     public async Task<ApiResponse<long>> Add([FromBody] AnnouncementSaveDto dto)
@@ -159,6 +163,8 @@ public class CmsAnnouncementController : ControllerBase
     /// </summary>
     [HttpPut("edit")]
     [Authorize]
+    [Permission(CmsPermissions.AnnouncementEdit)]   // announcement:edit
+    [OperationLog("内容管理", "编辑公告")]
     [ProducesResponseType(typeof(ApiResponse<long>), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ApiResponse<long>), StatusCodes.Status400BadRequest)]
     [ProducesResponseType(typeof(ApiResponse<long>), StatusCodes.Status404NotFound)]
@@ -200,6 +206,8 @@ public class CmsAnnouncementController : ControllerBase
     /// </summary>
     [HttpDelete("{id:long}")]
     [Authorize]
+    [Permission(CmsPermissions.AnnouncementRemove)] // announcement:delete
+    [OperationLog("内容管理", "删除公告")]
     [ProducesResponseType(typeof(ApiResponse<bool>), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ApiResponse<bool>), StatusCodes.Status404NotFound)]
     public async Task<ApiResponse<bool>> Delete(long id)
@@ -232,6 +240,8 @@ public class CmsAnnouncementController : ControllerBase
     /// </summary>
     [HttpPut("update-status")]
     [Authorize]
+    [Permission(CmsPermissions.AnnouncementStatus)] // announcement:status
+    [OperationLog("内容管理", "公告发布状态")]
     [ProducesResponseType(typeof(ApiResponse<bool>), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ApiResponse<bool>), StatusCodes.Status404NotFound)]
     public async Task<ApiResponse<bool>> UpdateStatus([FromBody] AnnouncementStatusDto dto)

@@ -1,3 +1,4 @@
+using Jsd.Api.Attributes;
 using Jsd.Api.Models.Common;
 using Jsd.Api.Models.Product;
 using Jsd.Api.Services;
@@ -27,6 +28,7 @@ public class ProdSpecItemController : ControllerBase
     /// </summary>
     /// <param name="prodInfoId">商品ID（必填）</param>
     [HttpGet("list")]
+    [Permission(ProdSpecPermissions.List)]  // prod:spec:list
     public async Task<ApiResponse<List<SpecItemDto>>> GetList([FromQuery] long prodInfoId)
     {
         if (prodInfoId < 1)
@@ -41,6 +43,8 @@ public class ProdSpecItemController : ControllerBase
     /// 请求体：{ "prodInfoId": 1, "specName": "颜色", "sort": 1 }
     /// </summary>
     [HttpPost]
+    [Permission(ProdSpecPermissions.Add)]   // prod:spec:add
+    [OperationLog("商品管理", "新增规格项")]
     public async Task<ApiResponse<object>> Create([FromBody] SpecItemCreateDto dto)
     {
         // [ApiController] + DTO 特性自动做非空校验，不通过直接返回 400
@@ -52,6 +56,8 @@ public class ProdSpecItemController : ControllerBase
     /// 请求体：{ "id": 1, "specName": "镜片颜色", "sort": 1 }
     /// </summary>
     [HttpPut]
+    [Permission(ProdSpecPermissions.Edit)]  // prod:spec:edit
+    [OperationLog("商品管理", "修改规格项")]
     public async Task<ApiResponse<object>> Update([FromBody] SpecItemUpdateDto dto)
     {
         return await _specService.UpdateItemAsync(dto);
@@ -62,6 +68,8 @@ public class ProdSpecItemController : ControllerBase
     /// 示例：DELETE /api/prod/spec-item/1
     /// </summary>
     [HttpDelete("{id}")]
+    [Permission(ProdSpecPermissions.Remove)] // prod:spec:remove
+    [OperationLog("商品管理", "删除规格项")]
     public async Task<ApiResponse<object>> Delete(long id)
     {
         return await _specService.DeleteItemAsync(id);

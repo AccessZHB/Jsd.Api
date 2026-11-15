@@ -30,11 +30,15 @@ public class DictTypeController : ControllerBase
     /// <summary>字典类型列表（分页 + 条件搜索）</summary>
     /// <remarks>GET /api/dict/type/list?dictName=&amp;dictType=&amp;status=0&amp;page=1&amp;pageSize=10</remarks>
     [HttpGet("list")]
+    [Permission(DictPermissions.TypeList)]     // dict:type:list
     public async Task<ApiResponse<PagedResult<DictTypeDto>>> GetList([FromQuery] DictTypeQueryDto query)
         => await _dictTypeService.GetPagedAsync(query);
 
     /// <summary>字典类型下拉选项（仅返回启用状态的类型）</summary>
-    /// <remarks>GET /api/dict/type/options</remarks>
+    /// <remarks>
+    /// GET /api/dict/type/options
+    /// 不挂权限：被字典数据页、各类配置表单复用，属公共只读数据。
+    /// </remarks>
     [HttpGet("options")]
     public async Task<ApiResponse<List<DictTypeOptionDto>>> GetOptions()
         => await _dictTypeService.GetOptionsAsync();
@@ -42,12 +46,14 @@ public class DictTypeController : ControllerBase
     /// <summary>字典类型详情</summary>
     /// <remarks>GET /api/dict/type/1</remarks>
     [HttpGet("{id:long}")]
+    [Permission(DictPermissions.TypeList)]     // 详情复用 list
     public async Task<ApiResponse<DictTypeDto?>> GetById(long id)
         => await _dictTypeService.GetByIdAsync(id);
 
     /// <summary>新增字典类型</summary>
     /// <remarks>POST /api/dict/type</remarks>
     [HttpPost]
+    [Permission(DictPermissions.TypeCreate)]   // dict:type:create
     [OperationLog("字典管理", "新增字典类型")]
     public async Task<ApiResponse<long>> Create([FromBody] CreateDictTypeDto dto)
     {
@@ -64,6 +70,7 @@ public class DictTypeController : ControllerBase
     /// <summary>修改字典类型</summary>
     /// <remarks>PUT /api/dict/type</remarks>
     [HttpPut]
+    [Permission(DictPermissions.TypeUpdate)]   // dict:type:update
     [OperationLog("字典管理", "修改字典类型")]
     public async Task<ApiResponse<bool>> Update([FromBody] UpdateDictTypeDto dto)
     {
@@ -80,6 +87,7 @@ public class DictTypeController : ControllerBase
     /// <summary>启用/停用字典类型</summary>
     /// <remarks>PUT /api/dict/type/{id}/status   body: { "status": 0 }</remarks>
     [HttpPut("{id:long}/status")]
+    [Permission(DictPermissions.TypeUpdate)]   // 启停复用 update
     [OperationLog("字典管理", "启用停用字典类型")]
     public async Task<ApiResponse<bool>> ChangeStatus(long id, [FromBody] DictStatusDto dto)
         => await _dictTypeService.ChangeStatusAsync(id, dto);
@@ -87,6 +95,7 @@ public class DictTypeController : ControllerBase
     /// <summary>删除字典类型（同一事务内级联删除其下字典数据）</summary>
     /// <remarks>DELETE /api/dict/type/1</remarks>
     [HttpDelete("{id:long}")]
+    [Permission(DictPermissions.TypeDelete)]   // dict:type:delete
     [OperationLog("字典管理", "删除字典类型")]
     public async Task<ApiResponse<bool>> Delete(long id)
         => await _dictTypeService.DeleteAsync(id);

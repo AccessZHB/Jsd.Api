@@ -25,7 +25,7 @@ public static class StockCheckPermissions
     public const string List = "stock_check:list";
 
     /// <summary>盘点单详情</summary>
-    public const string Detail = "stock_check:detail";
+    public const string Detail = "stock_check:list";
 
     /// <summary>新增盘点单</summary>
     public const string Add = "stock_check:add";

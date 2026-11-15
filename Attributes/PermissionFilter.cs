@@ -272,28 +272,24 @@ public class PermissionFilter : IAsyncActionFilter
     ///   1) 每给一个控制器补完 [Permission]，就把它从本名单删除；
     ///   2) **新写的控制器不要加进来** —— 不在名单内即默认拒绝（403），这是本机制的意义所在；
     ///   3) 名单清空后，本机制即为完全的「写操作默认拒绝」。
+    ///
+    /// 【2026-11-15 · 终态】三批次重构已全部完成，名单正式清空，
+    /// 「未标 [Permission] 的写操作 = 403」全面生效，无任何例外。
+    /// 集合本身保留为空实现，仅用于保留该分支结构与历史记录；
+    /// 如需临时应急豁免，可把对应控制器名取消注释（但必须同时登记工单限期补权限）。
     /// </summary>
     private static readonly HashSet<string> LegacyUnpermissionedControllers = new(StringComparer.OrdinalIgnoreCase)
     {
-        // TODO 待补权限（建议下一批处理，按风险从高到低）
-        "SysRole",              // P0：可自我提权
-        "SysUser",              // P0：可重置超管密码（Create 已补，其余待补）
-        "SysConfig",
-        "TaskJob",
-        "Customer",             // 可重置任意会员密码
-        "ProdInfo",
-        "ProdSku",
-        "ProdSpecItem",
-        "ProdSpecValue",
-        "SupSupplier",
-        "Banner",
-        "CmsAnnouncement",
-        "DictType",
-        "DictData",
-        "File",
-        "AdminUpload",
-        "PaymentLog",
-        "AfterSaleLog"
+        // ===== 历史记录（已全部补完权限，禁止重新启用）=====
+        // 第 3 批（内容 / 字典 / 上传 / 日志）
+        // "Banner",
+        // "CmsAnnouncement",
+        // "DictType",
+        // "DictData",
+        // "File",
+        // "AdminUpload",
+        // "PaymentLog",
+        // "AfterSaleLog"
     };
 
     /// <summary>接口是否显式声明「有意不做角色权限校验」</summary>

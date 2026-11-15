@@ -1,3 +1,4 @@
+using Jsd.Api.Attributes;
 using Jsd.Api.Entities;
 using Jsd.Api.Models.Common;
 using Jsd.Api.Models.Home;
@@ -81,6 +82,7 @@ public class BannerController : ControllerBase
     /// </summary>
     [HttpGet("admin/list")]
     [Authorize]
+    [Permission(BannerPermissions.List)]    // banner:list
     [ProducesResponseType(typeof(ApiResponse<PagedResult<BannerListDto>>), StatusCodes.Status200OK)]
     public async Task<ApiResponse<PagedResult<BannerListDto>>> GetAdminList([FromQuery] int page = 1, [FromQuery] int pageSize = 10)
     {
@@ -130,6 +132,8 @@ public class BannerController : ControllerBase
     /// </summary>
     [HttpPost("admin/add")]
     [Authorize]
+    [Permission(BannerPermissions.Add)]     // banner:add
+    [OperationLog("内容管理", "新增轮播")]
     [ProducesResponseType(typeof(ApiResponse<long>), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ApiResponse<long>), StatusCodes.Status400BadRequest)]
     public async Task<ApiResponse<long>> AdminAdd([FromBody] BannerSaveDto dto)
@@ -165,6 +169,8 @@ public class BannerController : ControllerBase
     /// </summary>
     [HttpPut("admin/edit")]
     [Authorize]
+    [Permission(BannerPermissions.Edit)]    // banner:edit
+    [OperationLog("内容管理", "编辑轮播")]
     [ProducesResponseType(typeof(ApiResponse<long>), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ApiResponse<long>), StatusCodes.Status400BadRequest)]
     [ProducesResponseType(typeof(ApiResponse<long>), StatusCodes.Status404NotFound)]
@@ -207,6 +213,8 @@ public class BannerController : ControllerBase
     /// </summary>
     [HttpDelete("admin/{id:long}")]
     [Authorize]
+    [Permission(BannerPermissions.Remove)]  // banner:delete
+    [OperationLog("内容管理", "删除轮播")]
     [ProducesResponseType(typeof(ApiResponse<bool>), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ApiResponse<bool>), StatusCodes.Status404NotFound)]
     public async Task<ApiResponse<bool>> AdminDelete(long id)
@@ -239,6 +247,8 @@ public class BannerController : ControllerBase
     /// </summary>
     [HttpPut("admin/update-status")]
     [Authorize]
+    [Permission(BannerPermissions.Status)]  // banner:status
+    [OperationLog("内容管理", "轮播启用禁用")]
     [ProducesResponseType(typeof(ApiResponse<bool>), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ApiResponse<bool>), StatusCodes.Status404NotFound)]
     public async Task<ApiResponse<bool>> AdminUpdateStatus([FromBody] BannerStatusDto dto)

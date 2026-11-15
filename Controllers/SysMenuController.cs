@@ -26,6 +26,10 @@ public class SysMenuController : ControllerBase
     /// <summary>
     /// 获取当前登录用户的菜单树
     /// （根据 Token 中的用户ID → 角色 → sys_role_menu 授权 → 组装菜单树）
+    ///
+    /// 权限说明：本接口是"侧边栏渲染"的唯一来源，所有登录用户都必须能调，
+    /// 因此不挂 [Permission]（挂任一菜单权限都会导致无该权限的账号侧边栏空白）。
+    /// 数据安全由 Service 内按当前用户角色过滤保证，不会返回未授权菜单。
     /// </summary>
     [HttpGet]
     public async Task<ApiResponse<List<MenuTreeNodeDto>>> GetMenuTree()
@@ -54,6 +58,7 @@ public class SysMenuController : ControllerBase
     /// 示例：GET /api/sys/menu/100
     /// </summary>
     [HttpGet("{id}")]
+    [Permission(SysMenuPermissions.Query)]  // system:menu:query
     public async Task<ApiResponse<SysMenuDto>> GetById(long id)
     {
         return await _menuService.GetByIdAsync(id);
@@ -65,6 +70,7 @@ public class SysMenuController : ControllerBase
     /// 示例：POST /api/sys/menu
     /// </summary>
     [HttpPost]
+    [Permission(SysMenuPermissions.Add)]    // system:menu:add
     [OperationLog("系统管理", "新增菜单")]
     public async Task<ApiResponse<object>> Create([FromBody] SysMenuCreateDto dto)
     {
@@ -77,6 +83,8 @@ public class SysMenuController : ControllerBase
     /// 请求体：{ "id": 100, "parentId": 1, "menuName": "管理员管理", "path": "user", "menuType": 2 }
     /// </summary>
     [HttpPut]
+    [Permission(SysMenuPermissions.Edit)]   // system:menu:edit
+    [OperationLog("系统管理", "修改菜单")]
     public async Task<ApiResponse<object>> Update([FromBody] SysMenuUpdateDto dto)
     {
         // [ApiController] + DTO 上的 [Required]/[Range] 特性自动做参数校验，不通过直接返回 400
@@ -88,6 +96,8 @@ public class SysMenuController : ControllerBase
     /// 示例：DELETE /api/sys/menu/10000
     /// </summary>
     [HttpDelete("{id}")]
+    [Permission(SysMenuPermissions.Remove)] // system:menu:remove
+    [OperationLog("系统管理", "删除菜单")]
     public async Task<ApiResponse<object>> Delete(long id)
     {
         return await _menuService.DeleteAsync(id);
@@ -98,6 +108,8 @@ public class SysMenuController : ControllerBase
     /// 示例：DELETE /api/sys/menu/batch?ids=10000,10001
     /// </summary>
     [HttpDelete("batch")]
+    [Permission(SysMenuPermissions.Remove)] // 批量删除复用 remove
+    [OperationLog("系统管理", "批量删除菜单")]
     public async Task<ApiResponse<object>> DeleteBatch([FromQuery] string ids)
     {
         var idList = ParseIds(ids);

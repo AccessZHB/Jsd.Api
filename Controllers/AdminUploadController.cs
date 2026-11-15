@@ -1,5 +1,7 @@
+using Jsd.Api.Attributes;
 using Jsd.Api.Helpers;
 using Jsd.Api.Models.Common;
+using Jsd.Api.Models.File;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
@@ -27,6 +29,7 @@ public class AdminUploadController : ControllerBase
     /// 返回：{ "url": "/upload/yyyyMM/xxxxxxxx.jpg" }
     /// </summary>
     [HttpPost("image")]
+    [Permission(FilePermissions.Upload)]    // file:upload（与 /api/file/upload 共用）
     public Task<ApiResponse<object>> Image(IFormFile? file)
     {
         return ImageSaver.SaveAsync(_env, file);

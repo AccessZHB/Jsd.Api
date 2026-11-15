@@ -1,3 +1,4 @@
+using Jsd.Api.Attributes;
 using Jsd.Api.Models.Common;
 using Jsd.Api.Models.Product;
 using Jsd.Api.Services;
@@ -56,6 +57,8 @@ public class ProdInfoController : ControllerBase
     /// 请求体：SPU 基础字段 + specItems(规格项/值) + skus(前端组合好的SKU) + images(图片)
     /// </summary>
     [HttpPost]
+    [Permission(ProdInfoPermissions.Add)]   // prod:info:add
+    [OperationLog("商品管理", "新增商品")]
     public async Task<ApiResponse<object>> Create([FromBody] ProdInfoCreateDto dto)
     {
         return await _productService.CreateAsync(dto);
@@ -66,6 +69,8 @@ public class ProdInfoController : ControllerBase
     /// 示例：PUT /api/prod-info/123
     /// </summary>
     [HttpPut("{id:long}")]
+    [Permission(ProdInfoPermissions.Edit)]  // prod:info:edit
+    [OperationLog("商品管理", "修改商品")]
     public async Task<ApiResponse<object>> Update(long id, [FromBody] ProdInfoUpdateDto dto)
     {
         // 以路由 id 为准，防止请求体 id 不一致
@@ -78,6 +83,8 @@ public class ProdInfoController : ControllerBase
     /// 示例：PUT /api/prod-info/123/status  body: { "status": 1 }
     /// </summary>
     [HttpPut("{id:long}/status")]
+    [Permission(ProdInfoPermissions.Status)] // prod:info:status —— 上下架独立授权
+    [OperationLog("商品管理", "商品上下架")]
     public async Task<ApiResponse<object>> SetStatus(long id, [FromBody] SetStatusDto dto)
     {
         return await _productService.SetStatusAsync(id, dto.Status);
@@ -88,6 +95,8 @@ public class ProdInfoController : ControllerBase
     /// 示例：DELETE /api/prod-info/123
     /// </summary>
     [HttpDelete("{id:long}")]
+    [Permission(ProdInfoPermissions.Remove)] // prod:info:remove
+    [OperationLog("商品管理", "删除商品")]
     public async Task<ApiResponse<object>> Delete(long id)
     {
         return await _productService.DeleteAsync(id);

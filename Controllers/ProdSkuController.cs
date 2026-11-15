@@ -1,3 +1,4 @@
+using Jsd.Api.Attributes;
 using Jsd.Api.Models.Common;
 using Jsd.Api.Models.Product;
 using Jsd.Api.Services;
@@ -30,6 +31,7 @@ public class ProdSkuController : ControllerBase
     /// </summary>
     /// <param name="prodInfoId">商品ID（必填）</param>
     [HttpGet("list")]
+    [Permission(ProdSkuPermissions.List)]   // prod:sku:list
     public async Task<ApiResponse<List<ProdSkuDto>>> GetList([FromQuery] long prodInfoId)
     {
         if (prodInfoId < 1)
@@ -44,6 +46,7 @@ public class ProdSkuController : ControllerBase
     /// 示例：GET /api/prod/sku/5
     /// </summary>
     [HttpGet("{id}")]
+    [Permission(ProdSkuPermissions.Query)]  // prod:sku:query
     public async Task<ApiResponse<ProdSkuDto>> GetById(long id)
     {
         return await _skuService.GetByIdAsync(id);
@@ -56,6 +59,8 @@ public class ProdSkuController : ControllerBase
     /// 说明：specs 与 specValues 二选一即可；specValues 可直接传 "10,15"。
     /// </summary>
     [HttpPost]
+    [Permission(ProdSkuPermissions.Add)]    // prod:sku:add
+    [OperationLog("商品管理", "新增SKU")]
     public async Task<ApiResponse<object>> Create([FromBody] ProdSkuCreateDto dto)
     {
         // [ApiController] + DTO 特性自动做非空校验，不通过直接返回 400
@@ -67,6 +72,8 @@ public class ProdSkuController : ControllerBase
     /// 请求体：{ "id": 5, "specs": [{ "specId": 3, "specValueId": 10 }], "retailPrice": 219.00, "stock": 80 }
     /// </summary>
     [HttpPut]
+    [Permission(ProdSkuPermissions.Edit)]   // prod:sku:edit —— 改价+改库存，资金相关
+    [OperationLog("商品管理", "修改SKU")]
     public async Task<ApiResponse<object>> Update([FromBody] ProdSkuUpdateDto dto)
     {
         return await _skuService.UpdateAsync(dto);
@@ -77,6 +84,8 @@ public class ProdSkuController : ControllerBase
     /// 示例：DELETE /api/prod/sku/5
     /// </summary>
     [HttpDelete("{id}")]
+    [Permission(ProdSkuPermissions.Remove)] // prod:sku:remove
+    [OperationLog("商品管理", "删除SKU")]
     public async Task<ApiResponse<object>> Delete(long id)
     {
         return await _skuService.DeleteAsync(id);

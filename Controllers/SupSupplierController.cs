@@ -1,3 +1,4 @@
+using Jsd.Api.Attributes;
 using Jsd.Api.Models.Common;
 using Jsd.Api.Models.Supplier;
 using Jsd.Api.Services;
@@ -30,6 +31,7 @@ public class SupSupplierController : ControllerBase
     /// <param name="page">页码，默认1</param>
     /// <param name="pageSize">每页条数，默认10</param>
     [HttpGet("list")]
+    [Permission(SupSupplierPermissions.List)]   // sup:supplier:list
     public async Task<ApiResponse<PagedResult<SupplierDto>>> GetList(
         [FromQuery] string? keyword,
         [FromQuery] int? status,
@@ -44,6 +46,7 @@ public class SupSupplierController : ControllerBase
     /// 示例：GET /api/sup/supplier/all
     /// </summary>
     [HttpGet("all")]
+    [Permission(SupSupplierPermissions.Query)]  // 下拉数据复用 query
     public async Task<ApiResponse<List<SupplierDto>>> GetAll()
     {
         return await _supplierService.GetAllEnabledAsync();
@@ -54,6 +57,7 @@ public class SupSupplierController : ControllerBase
     /// 示例：GET /api/sup/supplier/1
     /// </summary>
     [HttpGet("{id}")]
+    [Permission(SupSupplierPermissions.Query)]  // sup:supplier:query
     public async Task<ApiResponse<SupplierDto>> GetById(long id)
     {
         return await _supplierService.GetByIdAsync(id);
@@ -64,6 +68,8 @@ public class SupSupplierController : ControllerBase
     /// 请求体：{ "supplierName": "明月镜片", "contactPerson": "张三", "contactPhone": "13800138000" }
     /// </summary>
     [HttpPost]
+    [Permission(SupSupplierPermissions.Add)]    // sup:supplier:add
+    [OperationLog("供应商管理", "新增供应商")]
     public async Task<ApiResponse<object>> Create([FromBody] SupplierCreateDto dto)
     {
         // [ApiController] + DTO 特性自动做非空校验，不通过直接返回 400
@@ -75,6 +81,8 @@ public class SupSupplierController : ControllerBase
     /// 请求体：{ "id": 1, "supplierName": "明月镜片", "contactPerson": "张三", "status": 1 }
     /// </summary>
     [HttpPut]
+    [Permission(SupSupplierPermissions.Edit)]   // sup:supplier:edit
+    [OperationLog("供应商管理", "修改供应商")]
     public async Task<ApiResponse<object>> Update([FromBody] SupplierUpdateDto dto)
     {
         return await _supplierService.UpdateAsync(dto);
@@ -85,6 +93,8 @@ public class SupSupplierController : ControllerBase
     /// 示例：DELETE /api/sup/supplier/1
     /// </summary>
     [HttpDelete("{id}")]
+    [Permission(SupSupplierPermissions.Remove)] // sup:supplier:remove
+    [OperationLog("供应商管理", "删除供应商")]
     public async Task<ApiResponse<object>> Delete(long id)
     {
         return await _supplierService.DeleteAsync(id);
