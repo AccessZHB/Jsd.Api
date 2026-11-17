@@ -12,17 +12,10 @@ INSERT INTO sys_role_menu (role_id, menu_id, create_time)
 SELECT 4, 335, NOW()
 WHERE NOT EXISTS (SELECT 1 FROM sys_role_menu rm WHERE rm.role_id = 4 AND rm.menu_id = 335);
 
--- ③ 运营(2) / 仓库(3)：仅列表只读权限（收款/应收/发票/对账）
-INSERT INTO sys_role_menu (role_id, menu_id, create_time)
-SELECT r.id, m.id, NOW()
-FROM (SELECT 2 AS id UNION ALL SELECT 3) r
-CROSS JOIN (
-    SELECT id FROM sys_menu WHERE permission IN (
-        'finance:receivable:list', 'finance:payment:list',
-        'finance:invoice:list', 'finance:reconciliation:list'
-    )
-) m
-WHERE NOT EXISTS (SELECT 1 FROM sys_role_menu rm WHERE rm.role_id = r.id AND rm.menu_id = m.id);
+-- ③ 【已移除】原先自动给运营(2)/仓库(3)授予财务列表只读权限。
+--    原因：角色能看到哪些菜单，必须完全由管理员在「分配菜单」里决定，
+--    脚本擅自授权会导致「未分配的菜单也出现在导航栏」，与权限配置不一致。
+--    如需让某角色查看财务列表，请在后台【角色管理 → 分配菜单】中勾选后保存。
 
 -- ④ 自检
 SELECT m.id, m.permission FROM sys_menu m WHERE m.permission = 'finance:receivable:sync';

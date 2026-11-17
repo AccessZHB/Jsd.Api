@@ -22,14 +22,10 @@ WHERE m.permission IN (
 )
 AND NOT EXISTS (SELECT 1 FROM sys_role_menu rm WHERE rm.role_id = 4 AND rm.menu_id = m.id);
 
--- ③ 运营(2) / 仓库(3)：仅充值列表 + 余额流水列表（只读）
-INSERT INTO sys_role_menu (role_id, menu_id, create_time)
-SELECT r.id, m.id, NOW()
-FROM (SELECT 2 AS id UNION ALL SELECT 3) r
-CROSS JOIN (
-    SELECT id FROM sys_menu WHERE permission IN ('member:recharge:list', 'member:balance-log:list')
-) m
-WHERE NOT EXISTS (SELECT 1 FROM sys_role_menu rm WHERE rm.role_id = r.id AND rm.menu_id = m.id);
+-- ③ 【已移除】原先自动给运营(2)/仓库(3)授予「充值管理 / 余额流水」列表权限。
+--    原因：菜单可见性必须完全由管理员在「分配菜单」中决定，
+--    脚本擅自授权会出现「角色未分配却能看到菜单」的权限越界。
+--    如需授权，请在后台【角色管理 → 分配菜单】中勾选后保存。
 
 -- ④ 自检
 SELECT m.id, m.permission FROM sys_menu m WHERE m.permission LIKE 'member:recharge:%' OR m.permission = 'member:balance-log:list' ORDER BY m.id;

@@ -78,6 +78,7 @@ public class AuthController : ControllerBase
     /// </summary>
     [HttpPost("change-password")]
     [Authorize]
+    [PermissionFree("本人修改密码：仅能改自己的密码（服务端按当前登录用户定位），不涉及角色权限")]
     [OperationLog("系统管理", "修改密码")]
     public async Task<ApiResponse<bool>> ChangePassword([FromBody] ChangePasswordDto dto)
     {
@@ -101,6 +102,7 @@ public class AuthController : ControllerBase
     /// </summary>
     [HttpPost("logout")]
     [Authorize]
+    [PermissionFree("本人登出：只把当前请求令牌加入黑名单，任何已登录用户都应能注销自己")]
     public async Task<ApiResponse<object>> Logout()
     {
         var token = Helpers.BearerTokenHelper.ReadToken(HttpContext);
